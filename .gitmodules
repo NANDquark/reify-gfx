@@ -1,0 +1,6 @@
+[submodule "lib/vma"]
+	path = lib/vma
+	url = https://github.com/Capati/odin-vma
+[submodule "lib/ktx"]
+	path = lib/ktx
+	url = https://github.com/DanielGavin/odin-libktx.git
