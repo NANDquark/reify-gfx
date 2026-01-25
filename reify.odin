@@ -54,7 +54,9 @@ run :: proc() {
 		pApplicationName = "Reify",
 		apiVersion = vk.API_VERSION_1_3,
 	}
-	instance_extensions := glfw.GetRequiredInstanceExtensions()
+	instance_extensions := [dynamic]cstring{}
+	append(&instance_extensions, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)
+	append(&instance_extensions, ..glfw.GetRequiredInstanceExtensions())
 	// num_properties: u31
 	// vk.EnumerateInstanceLayerProperties(&num_properties, nil)
 	// properties := make([]vk.LayerProperties, num_properties)
@@ -75,12 +77,10 @@ run :: proc() {
 	// SELECT DEVICE
 	device_count: u32
 	chk(vk.EnumeratePhysicalDevices(instance, &device_count, nil))
-	devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
-	chk(vk.EnumeratePhysicalDevices(instance, &device_count, raw_data(devices)))
-	// TODO command line argument to select alternate device
-	assert(len(devices) > 0, "physical device required")
-	phys_device := devices[0]
-	fmt.printfln("Selected device: %v", phys_device)
+	phys_devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
+	chk(vk.EnumeratePhysicalDevices(instance, &device_count, raw_data(phys_devices)))
+	assert(len(phys_devices) > 0, "physical device required")
+	phys_device := vk_select_phys_device(phys_devices)
 
 	// SETUP QUEUE
 	queue_family_count: u32
@@ -1115,6 +1115,73 @@ chk_swapchain :: proc(result: vk.Result) {
 	}
 }
 
+vk_select_phys_device :: proc(phys_devices: []vk.PhysicalDevice) -> vk.PhysicalDevice {
+	best: vk.PhysicalDevice
+	best_score := min(int)
+	for pd in phys_devices {
+		d_score := vk_rate_phys_device(pd)
+		if d_score > best_score {
+			best = pd
+			best_score = d_score
+		}
+	}
+	return best
+}
+
+vk_check_ext_supported :: proc(phys_device: vk.PhysicalDevice, target_ext_name: cstring) -> bool {
+	ext_count: u32
+	vk.EnumerateDeviceExtensionProperties(phys_device, nil, &ext_count, nil)
+	available_ext := make([]vk.ExtensionProperties, ext_count)
+	defer delete(available_ext)
+	vk.EnumerateDeviceExtensionProperties(phys_device, nil, &ext_count, raw_data(available_ext[:]))
+
+	for &ext in available_ext {
+		ext_name := cstring(&ext.extensionName[0])
+		if runtime.cstring_cmp(target_ext_name, ext_name) == 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+vk_rate_phys_device :: proc(phys_device: vk.PhysicalDevice) -> int {
+	props: vk.PhysicalDeviceProperties
+	vk.GetPhysicalDeviceProperties(phys_device, &props)
+
+	score := 0
+	if props.deviceType == .DISCRETE_GPU {
+		score += 1000
+	}
+	score += int(props.limits.maxImageDimension2D)
+
+	// account for available vram
+	if vk_check_ext_supported(
+		phys_device,
+		vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+	) {
+		budget_props := vk.PhysicalDeviceMemoryBudgetPropertiesEXT {
+			sType = .PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+		}
+		mem_props := vk.PhysicalDeviceMemoryProperties2 {
+			sType = .PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+			pNext = &budget_props,
+		}
+		vk.GetPhysicalDeviceMemoryProperties2(phys_device, &mem_props)
+
+		available_budget_gb := 0
+		for i in 0 ..< mem_props.memoryProperties.memoryHeapCount {
+			heap := mem_props.memoryProperties.memoryHeaps[i]
+			if .DEVICE_LOCAL in heap.flags {
+				available_budget_gb += int(budget_props.heapBudget[i]) / mem.Gigabyte
+			}
+		}
+		score += available_budget_gb * 100
+	}
+
+	return score
+}
+
 Vertex :: struct {
 	pos:    [3]f32,
 	normal: [3]f32,
@@ -1153,7 +1220,6 @@ window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
 	window_height = height
 }
 
-// ScrollProc             :: #type proc "c" (window: WindowHandle, xoffset, yoffset: f64)
 scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	context = runtime.default_context()
 	scroll_offset = [2]f64{x_offset, y_offset}
