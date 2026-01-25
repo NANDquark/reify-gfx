@@ -3,51 +3,62 @@ package reify
 import "base:runtime"
 import "core:c"
 import "core:fmt"
-import "core:log"
-import "core:math/linalg"
 import "core:mem"
 import "core:os"
 import "core:strings"
-import "core:time"
 import "lib/ktx"
 import "lib/obj"
 import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-WIDTH :: 800
-HEIGHT :: 600
 
 SHADER_BYTES :: #load("assets/shader.spv")
+MAX_FRAME_IN_FLIGHT :: 2
+IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 
+instance: vk.Instance
+phys_device: vk.PhysicalDevice
+device: vk.Device
+queue: vk.Queue
+allocator: vma.Allocator
+surface: vk.SurfaceKHR
+surface_caps: vk.SurfaceCapabilitiesKHR
+swapchain_create_info: vk.SwapchainCreateInfoKHR
+swapchain: vk.SwapchainKHR
+fences := [MAX_FRAME_IN_FLIGHT]vk.Fence{}
+present_semaphores := [MAX_FRAME_IN_FLIGHT]vk.Semaphore{}
+render_semaphores := [dynamic]vk.Semaphore{}
+shader_data_buffers := [MAX_FRAME_IN_FLIGHT]Shader_Data_Buffer{}
+command_buffers := [MAX_FRAME_IN_FLIGHT]vk.CommandBuffer{}
+swapchain_images := [dynamic]vk.Image{}
+swapchain_image_views := [dynamic]vk.ImageView{}
+depth_image: vk.Image
+depth_format := vk.Format.UNDEFINED
+depth_image_view: vk.ImageView
+depth_image_alloc: vma.Allocation
+depth_image_create_info: vk.ImageCreateInfo
+pipeline: vk.Pipeline
+pipeline_layout: vk.PipelineLayout
+descriptor_set_tex: vk.DescriptorSet
+v_buffer: vk.Buffer
+v_buffer_alloc: vma.Allocation
+v_buf_size: int
+i_buf_size: int
+index_count: int
+textures := [3]Texture{}
+texture_descriptors := [dynamic]vk.DescriptorImageInfo{}
+desc_set_layout_tex: vk.DescriptorSetLayout
+descriptor_pool: vk.DescriptorPool
+command_pool: vk.CommandPool
+shader_module: vk.ShaderModule
+
+frame_index := 0
 update_swapchain := false
 window_width, window_height: c.int
-scroll_offset: [2]f64
 
-run :: proc() {
-	context.logger = log.create_console_logger()
-
+init :: proc(window: glfw.WindowHandle) {
 	defer free_all(context.temp_allocator)
-
-	// SETUP WINDOW
-	if !bool(glfw.Init()) {
-		panic("failed to initialize GLFW")
-	}
-	defer glfw.Terminate()
-	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-	glfw.WindowHint(glfw.RESIZABLE, glfw.FALSE)
-	window := glfw.CreateWindow(WIDTH, HEIGHT, "Reify", nil, nil)
-	if window == nil {
-		panic("failed to create GLFW window")
-	}
-	defer glfw.DestroyWindow(window)
-	vk.load_proc_addresses(rawptr(glfw.GetInstanceProcAddress))
-	if !glfw.VulkanSupported() {
-		panic("GLFW does not detect vulkan support on this system")
-	}
-	glfw.SetWindowSizeCallback(window, window_size)
-	glfw.SetScrollCallback(window, scroll)
-
 	// CREATE INSTANCE
 	app_info := &vk.ApplicationInfo {
 		sType = .APPLICATION_INFO,
@@ -70,9 +81,12 @@ run :: proc() {
 		enabledLayerCount = u32(len(validation_layers)),
 		ppEnabledLayerNames = raw_data(validation_layers),
 	}
-	instance: vk.Instance
 	chk(vk.CreateInstance(instance_create_info, nil, &instance))
 	vk.load_proc_addresses(instance)
+
+	// CREATE SURFACE
+	chk(glfw.CreateWindowSurface(instance, window, nil, &surface))
+	window_width, window_height = glfw.GetWindowSize(window)
 
 	// SELECT DEVICE
 	device_count: u32
@@ -80,7 +94,7 @@ run :: proc() {
 	phys_devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
 	chk(vk.EnumeratePhysicalDevices(instance, &device_count, raw_data(phys_devices)))
 	assert(len(phys_devices) > 0, "physical device required")
-	phys_device := vk_select_phys_device(phys_devices)
+	phys_device = vk_select_phys_device(phys_devices)
 
 	// SETUP QUEUE
 	queue_family_count: u32
@@ -133,9 +147,7 @@ run :: proc() {
 		ppEnabledExtensionNames = raw_data(device_extensions),
 		pEnabledFeatures        = &enabled_vk10_features,
 	}
-	device: vk.Device
 	chk(vk.CreateDevice(phys_device, &device_create_info, nil, &device))
-	queue: vk.Queue
 	vk.GetDeviceQueue(device, queue_family, 0, &queue)
 	vk.load_proc_addresses(device)
 
@@ -166,40 +178,29 @@ run :: proc() {
 		vulkan_functions = &vk_functions,
 		instance         = instance,
 	}
-	allocator: vma.Allocator
 	chk(vma.create_allocator(allocator_create_info, &allocator))
 
 	// SETUP SURFACE
-	surface: vk.SurfaceKHR
-	chk(glfw.CreateWindowSurface(instance, window, nil, &surface))
-	surface_caps: vk.SurfaceCapabilitiesKHR
 	chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface, &surface_caps))
-	window_width, window_height = glfw.GetWindowSize(window)
-	image_format := vk.Format.B8G8R8A8_SRGB
-	swapchain_create_info := vk.SwapchainCreateInfoKHR {
+
+	swapchain_create_info = vk.SwapchainCreateInfoKHR {
 		sType = .SWAPCHAIN_CREATE_INFO_KHR,
 		surface = surface,
 		minImageCount = surface_caps.minImageCount,
-		imageFormat = image_format,
+		imageFormat = IMAGE_FORMAT,
 		imageColorSpace = .COLORSPACE_SRGB_NONLINEAR,
 		// surface extent had max int width/height since it was uninitialized
-		imageExtent = vk.Extent2D {
-			// width = surface_caps.currentExtent.width,
-			width  = u32(window_width),
-			// height = surface_caps.currentExtent.height,
-			height = u32(window_height),
-		},
+		imageExtent = vk.Extent2D{width = u32(window_width), height = u32(window_height)},
 		imageArrayLayers = 1,
 		imageUsage = {.COLOR_ATTACHMENT},
 		preTransform = {.IDENTITY},
 		compositeAlpha = {.OPAQUE},
 		presentMode = .FIFO,
 	}
-	swapchain: vk.SwapchainKHR
 	chk(vk.CreateSwapchainKHR(device, &swapchain_create_info, nil, &swapchain))
 	swapchain_image_count: u32
 	chk(vk.GetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nil))
-	swapchain_images := make([dynamic]vk.Image, swapchain_image_count)
+	resize(&swapchain_images, int(swapchain_image_count))
 	chk(
 		vk.GetSwapchainImagesKHR(
 			device,
@@ -208,13 +209,13 @@ run :: proc() {
 			raw_data(swapchain_images),
 		),
 	)
-	swapchain_image_views := make([dynamic]vk.ImageView, swapchain_image_count)
+	resize(&swapchain_image_views, int(swapchain_image_count))
 	for i in 0 ..< swapchain_image_count {
 		view_create_info := vk.ImageViewCreateInfo {
 			sType = .IMAGE_VIEW_CREATE_INFO,
 			image = swapchain_images[i],
 			viewType = .D2,
-			format = image_format,
+			format = IMAGE_FORMAT,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
 		chk(vk.CreateImageView(device, &view_create_info, nil, &swapchain_image_views[i]))
@@ -222,7 +223,6 @@ run :: proc() {
 
 	// DEPTH ATTACHMENT
 	depth_format_list := [2]vk.Format{.D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT}
-	depth_format := vk.Format.UNDEFINED
 	for format in depth_format_list {
 		format_properties := vk.FormatProperties2 {
 			sType = .FORMAT_PROPERTIES_2,
@@ -233,7 +233,7 @@ run :: proc() {
 			break
 		}
 	}
-	depth_image_create_info := vk.ImageCreateInfo {
+	depth_image_create_info = vk.ImageCreateInfo {
 		sType = .IMAGE_CREATE_INFO,
 		imageType = .D2,
 		format = depth_format,
@@ -249,8 +249,6 @@ run :: proc() {
 		flags = {.Dedicated_Memory},
 		usage = .Auto,
 	}
-	depth_image: vk.Image
-	depth_image_alloc: vma.Allocation
 	chk(
 		vma.create_image(
 			allocator,
@@ -272,7 +270,6 @@ run :: proc() {
 			layerCount = 1,
 		},
 	}
-	depth_image_view: vk.ImageView
 	chk(vk.CreateImageView(device, &depth_view_create_info, nil, &depth_image_view))
 
 	// LOAD MESH
@@ -304,9 +301,9 @@ run :: proc() {
 			}
 		}
 	}
-	index_count := u32(len(indices))
-	v_buf_size := size_of(Vertex) * len(vertices)
-	i_buf_size := size_of(u32) * len(indices)
+	index_count = len(indices)
+	v_buf_size = size_of(Vertex) * len(vertices)
+	i_buf_size = size_of(u32) * len(indices)
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		size  = vk.DeviceSize(v_buf_size + i_buf_size),
@@ -316,8 +313,6 @@ run :: proc() {
 		flags = {.Host_Access_Sequential_Write, .Host_Access_Allow_Transfer_Instead, .Mapped},
 		usage = .Auto,
 	}
-	v_buffer: vk.Buffer
-	v_buffer_alloc: vma.Allocation
 	chk(
 		vma.create_buffer(
 			allocator,
@@ -338,10 +333,7 @@ run :: proc() {
 	vma.unmap_memory(allocator, v_buffer_alloc)
 
 	// CPU & GPU Sync
-	max_frames_in_flight :: 2
-	shader_data_buffers := [max_frames_in_flight]Shader_Data_Buffer{}
-	command_buffers := [max_frames_in_flight]vk.CommandBuffer{}
-	for i in 0 ..< max_frames_in_flight {
+	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		u_buffer_create_info := vk.BufferCreateInfo {
 			sType = .BUFFER_CREATE_INFO,
 			size  = size_of(Shader_Data),
@@ -374,9 +366,7 @@ run :: proc() {
 		}
 		shader_data_buffers[i].device_addr = vk.GetBufferDeviceAddress(device, &u_buffer_bda_info)
 	}
-	fences := [max_frames_in_flight]vk.Fence{}
-	present_semaphores := [max_frames_in_flight]vk.Semaphore{}
-	render_semaphores := make([]vk.Semaphore, swapchain_image_count, context.temp_allocator)
+	resize(&render_semaphores, swapchain_image_count)
 	semaphore_create_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
@@ -384,7 +374,7 @@ run :: proc() {
 		sType = .FENCE_CREATE_INFO,
 		flags = {.SIGNALED},
 	}
-	for i in 0 ..< max_frames_in_flight {
+	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		chk(vk.CreateFence(device, &fence_create_info, nil, &fences[i]))
 		chk(vk.CreateSemaphore(device, &semaphore_create_info, nil, &present_semaphores[i]))
 	}
@@ -398,12 +388,11 @@ run :: proc() {
 		flags            = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = queue_family,
 	}
-	command_pool: vk.CommandPool
 	chk(vk.CreateCommandPool(device, &command_pool_create_info, nil, &command_pool))
 	command_buffer_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
-		commandBufferCount = max_frames_in_flight,
+		commandBufferCount = MAX_FRAME_IN_FLIGHT,
 	}
 	chk(
 		vk.AllocateCommandBuffers(
@@ -414,8 +403,6 @@ run :: proc() {
 	)
 
 	// LOADING TEXTURES
-	textures := [3]Texture{}
-	texture_descriptors := [dynamic]vk.DescriptorImageInfo{}
 	for t, i in textures {
 		ktx_texture: ^ktx.Texture
 		filename := fmt.tprintf("assets/suzanne%d.ktx", i)
@@ -629,7 +616,6 @@ run :: proc() {
 		bindingCount = 1,
 		pBindings    = &desc_layout_binding_tex,
 	}
-	desc_set_layout_tex: vk.DescriptorSetLayout
 	chk(
 		vk.CreateDescriptorSetLayout(
 			device,
@@ -648,7 +634,6 @@ run :: proc() {
 		poolSizeCount = 1,
 		pPoolSizes    = &pool_size,
 	}
-	descriptor_pool: vk.DescriptorPool
 	chk(vk.CreateDescriptorPool(device, &desc_pool_create_info, nil, &descriptor_pool))
 	var_desc_count := u32(len(textures))
 	var_desc_count_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
@@ -663,7 +648,6 @@ run :: proc() {
 		descriptorSetCount = 1,
 		pSetLayouts        = &desc_set_layout_tex,
 	}
-	descriptor_set_tex: vk.DescriptorSet
 	chk(vk.AllocateDescriptorSets(device, &tex_desc_set_alloc, &descriptor_set_tex))
 	write_desc_set := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
@@ -681,7 +665,6 @@ run :: proc() {
 		codeSize = len(SHADER_BYTES),
 		pCode    = cast(^u32)raw_data(SHADER_BYTES),
 	}
-	shader_module: vk.ShaderModule
 	chk(vk.CreateShaderModule(device, &shader_module_create_info, nil, &shader_module))
 
 	// GRAPHICS PIPELINE
@@ -696,7 +679,6 @@ run :: proc() {
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
-	pipeline_layout: vk.PipelineLayout
 	chk(vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, &pipeline_layout))
 	vertex_binding := vk.VertexInputBindingDescription {
 		binding   = 0,
@@ -758,7 +740,7 @@ run :: proc() {
 	rendering_create_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
-		pColorAttachmentFormats = &image_format,
+		pColorAttachmentFormats = &IMAGE_FORMAT,
 		depthAttachmentFormat   = depth_format,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
@@ -792,282 +774,236 @@ run :: proc() {
 		pDynamicState       = &dynamic_state,
 		layout              = pipeline_layout,
 	}
-	pipeline: vk.Pipeline
 	chk(vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, &pipeline))
+}
 
-	// MAIN LOOP
-	frame_index := 0
-	shader_data := Shader_Data {
-		light_pos = [4]f32{0, -10, 10, 0},
-		selected  = 1,
-	}
-	cam_pos := [3]f32{0.0, 0.0, -6.0}
-	object_rotations := [3][3]f32{}
-	last_mouse_pos: [2]f64
-	frame_delta_time: time.Duration
-	last_frame_time := time.now()
-	for !glfw.WindowShouldClose(window) {
-		frame_start_time := time.now()
-		frame_delta_time = time.diff(last_frame_time, frame_start_time)
-		last_frame_time = frame_start_time
-
-		glfw.PollEvents()
-		// Rotate with mouse drag
-		mouse_x, mouse_y := glfw.GetCursorPos(window)
-		mouse_pos := [2]f64{mouse_x, mouse_y}
-		if glfw.GetMouseButton(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
-			delta := last_mouse_pos - mouse_pos
-			sensitivity :: 0.005
-			object_rotations[shader_data.selected].x += f32(-delta.y) * sensitivity // -y to account for y-axis flip
-			object_rotations[shader_data.selected].y -= f32(delta.x) * sensitivity
-		}
-		last_mouse_pos = mouse_pos
-		// Zoom with mouse wheel
-		if scroll_offset != {} {
-			cam_pos.z += f32(scroll_offset.y) * 0.025 * f32(frame_delta_time)
-		}
-
-		// Wait on frame fence
-		chk(vk.WaitForFences(device, 1, &fences[frame_index], true, max(u64)))
-		chk(vk.ResetFences(device, 1, &fences[frame_index]))
-		// Next image
-		image_index: u32
-		chk_swapchain(
-			vk.AcquireNextImageKHR(
-				device,
-				swapchain,
-				max(u64),
-				present_semaphores[frame_index],
-				0,
-				&image_index,
-			),
-		)
-		// Update shader data
-		window_ratio := f32(window_width) / f32(window_height)
-		shader_data.projection = linalg.matrix4_perspective(linalg.PI / 4, window_ratio, 0.1, 32)
-		shader_data.view = linalg.matrix4_translate(cam_pos)
-		for i in 0 ..< 3 {
-			instance_pos := [3]f32{f32(i - 1) * 3, 0, 0}
-			rotation_quat := linalg.quaternion_from_euler_angles(
-				object_rotations[i].x,
-				object_rotations[i].y,
-				object_rotations[i].z,
-				.XYZ,
-			)
-			rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
-			translation_mat := linalg.matrix4_translate(instance_pos)
-			shader_data.model[i] = translation_mat * rotation_mat
-		}
-		mem.copy(shader_data_buffers[frame_index].mapped, &shader_data, size_of(Shader_Data))
-		// Record command buffer
-		cb := command_buffers[frame_index]
-		chk(vk.ResetCommandBuffer(cb, {}))
-		cb_begin_info := vk.CommandBufferBeginInfo {
-			sType = .COMMAND_BUFFER_BEGIN_INFO,
-			flags = {.ONE_TIME_SUBMIT},
-		}
-		chk(vk.BeginCommandBuffer(cb, &cb_begin_info))
-		output_barriers := []vk.ImageMemoryBarrier2 {
-			{
-				sType = .IMAGE_MEMORY_BARRIER_2,
-				srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-				srcAccessMask = {},
-				dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-				dstAccessMask = {.COLOR_ATTACHMENT_READ, .COLOR_ATTACHMENT_WRITE},
-				oldLayout = .UNDEFINED,
-				newLayout = .ATTACHMENT_OPTIMAL,
-				image = swapchain_images[image_index],
-				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-			},
-			{
-				sType = .IMAGE_MEMORY_BARRIER_2,
-				srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-				srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-				dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-				dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-				oldLayout = .UNDEFINED,
-				newLayout = .ATTACHMENT_OPTIMAL,
-				image = depth_image,
-				subresourceRange = {
-					aspectMask = {.DEPTH, .STENCIL},
-					levelCount = 1,
-					layerCount = 1,
-				},
-			},
-		}
-		barrier_dep_info := vk.DependencyInfo {
-			sType                   = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = u32(len(output_barriers)),
-			pImageMemoryBarriers    = raw_data(output_barriers),
-		}
-		vk.CmdPipelineBarrier2(cb, &barrier_dep_info)
-		color_attachment_info := vk.RenderingAttachmentInfo {
-			sType = .RENDERING_ATTACHMENT_INFO,
-			imageView = swapchain_image_views[image_index],
-			imageLayout = .ATTACHMENT_OPTIMAL,
-			loadOp = .CLEAR,
-			storeOp = .STORE,
-			clearValue = {color = {float32 = {0, 0, 0.2, 1}}},
-		}
-		depth_attachment_info := vk.RenderingAttachmentInfo {
-			sType = .RENDERING_ATTACHMENT_INFO,
-			imageView = depth_image_view,
-			imageLayout = .ATTACHMENT_OPTIMAL,
-			loadOp = .CLEAR,
-			storeOp = .DONT_CARE,
-			clearValue = {depthStencil = {depth = 1, stencil = 0}},
-		}
-		// dynamic rendering
-		rendering_info := vk.RenderingInfo {
-			sType = .RENDERING_INFO,
-			renderArea = {extent = {width = u32(window_width), height = u32(window_height)}},
-			layerCount = 1,
-			colorAttachmentCount = 1,
-			pColorAttachments = &color_attachment_info,
-			pDepthAttachment = &depth_attachment_info,
-		}
-		vk.CmdBeginRendering(cb, &rendering_info)
-		// here we swap the y-axis since vulkan y-axis point down
-		vp := vk.Viewport {
-			x        = 0,
-			y        = f32(window_height),
-			width    = f32(window_width),
-			height   = -f32(window_height),
-			minDepth = 0,
-			maxDepth = 1,
-		}
-		vk.CmdSetViewport(cb, 0, 1, &vp)
-		scissor := vk.Rect2D {
-			extent = {width = u32(window_width), height = u32(window_height)},
-		}
-		vk.CmdSetScissor(cb, 0, 1, &scissor)
-		vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
-		vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &descriptor_set_tex, 0, nil)
-		v_offset: vk.DeviceSize
-		vk.CmdBindVertexBuffers(cb, 0, 1, &v_buffer, &v_offset)
-		vk.CmdBindIndexBuffer(cb, v_buffer, vk.DeviceSize(v_buf_size), .UINT32)
-		vk.CmdPushConstants(
-			cb,
-			pipeline_layout,
-			{.VERTEX},
+draw :: proc(shader_data: ^Shader_Data) {
+	d := device
+	f := fences
+	chk(vk.WaitForFences(device, 1, &fences[frame_index], true, max(u64)))
+	chk(vk.ResetFences(device, 1, &fences[frame_index]))
+	// Next image
+	image_index: u32
+	chk_swapchain(
+		vk.AcquireNextImageKHR(
+			device,
+			swapchain,
+			max(u64),
+			present_semaphores[frame_index],
 			0,
-			size_of(vk.DeviceAddress),
-			&shader_data_buffers[frame_index].device_addr,
-		)
-		vk.CmdDrawIndexed(cb, index_count, 3, 0, 0, 0) // draws each triangle
-		vk.CmdEndRendering(cb)
-		barrier_present := vk.ImageMemoryBarrier2 {
+			&image_index,
+		),
+	)
+
+	// Store updated shader data
+	mem.copy(shader_data_buffers[frame_index].mapped, shader_data, size_of(Shader_Data))
+
+	// Record command buffer
+	cb := command_buffers[frame_index]
+	chk(vk.ResetCommandBuffer(cb, {}))
+	cb_begin_info := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}
+	chk(vk.BeginCommandBuffer(cb, &cb_begin_info))
+	output_barriers := []vk.ImageMemoryBarrier2 {
+		{
 			sType = .IMAGE_MEMORY_BARRIER_2,
 			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-			srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
+			srcAccessMask = {},
 			dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
-			dstAccessMask = {},
-			oldLayout = .COLOR_ATTACHMENT_OPTIMAL,
-			newLayout = .PRESENT_SRC_KHR,
+			dstAccessMask = {.COLOR_ATTACHMENT_READ, .COLOR_ATTACHMENT_WRITE},
+			oldLayout = .UNDEFINED,
+			newLayout = .ATTACHMENT_OPTIMAL,
 			image = swapchain_images[image_index],
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-		}
-		barrier_present_dep_info := vk.DependencyInfo {
-			sType                   = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers    = &barrier_present,
-		}
-		vk.CmdPipelineBarrier2(cb, &barrier_present_dep_info)
-		vk.EndCommandBuffer(cb)
-		// Submit command buffer
-		wait_stages := vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT}
-		submit_info := vk.SubmitInfo {
-			sType                = .SUBMIT_INFO,
-			waitSemaphoreCount   = 1,
-			pWaitSemaphores      = &present_semaphores[frame_index],
-			pWaitDstStageMask    = &wait_stages,
-			commandBufferCount   = 1,
-			pCommandBuffers      = &cb,
-			signalSemaphoreCount = 1,
-			pSignalSemaphores    = &render_semaphores[image_index],
-		}
-		chk(vk.QueueSubmit(queue, 1, &submit_info, fences[frame_index]))
-		frame_index = (frame_index + 1) % max_frames_in_flight
-		// present
-		present_info := vk.PresentInfoKHR {
-			sType              = .PRESENT_INFO_KHR,
-			waitSemaphoreCount = 1,
-			pWaitSemaphores    = &render_semaphores[image_index],
-			swapchainCount     = 1,
-			pSwapchains        = &swapchain,
-			pImageIndices      = &image_index,
-		}
-		chk_swapchain(vk.QueuePresentKHR(queue, &present_info))
+		},
+		{
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+			srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+			dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+			dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
+			oldLayout = .UNDEFINED,
+			newLayout = .ATTACHMENT_OPTIMAL,
+			image = depth_image,
+			subresourceRange = {aspectMask = {.DEPTH, .STENCIL}, levelCount = 1, layerCount = 1},
+		},
+	}
+	barrier_dep_info := vk.DependencyInfo {
+		sType                   = .DEPENDENCY_INFO,
+		imageMemoryBarrierCount = u32(len(output_barriers)),
+		pImageMemoryBarriers    = raw_data(output_barriers),
+	}
+	vk.CmdPipelineBarrier2(cb, &barrier_dep_info)
+	color_attachment_info := vk.RenderingAttachmentInfo {
+		sType = .RENDERING_ATTACHMENT_INFO,
+		imageView = swapchain_image_views[image_index],
+		imageLayout = .ATTACHMENT_OPTIMAL,
+		loadOp = .CLEAR,
+		storeOp = .STORE,
+		clearValue = {color = {float32 = {0, 0, 0.2, 1}}},
+	}
+	depth_attachment_info := vk.RenderingAttachmentInfo {
+		sType = .RENDERING_ATTACHMENT_INFO,
+		imageView = depth_image_view,
+		imageLayout = .ATTACHMENT_OPTIMAL,
+		loadOp = .CLEAR,
+		storeOp = .DONT_CARE,
+		clearValue = {depthStencil = {depth = 1, stencil = 0}},
+	}
+	// dynamic rendering
+	rendering_info := vk.RenderingInfo {
+		sType = .RENDERING_INFO,
+		renderArea = {extent = {width = u32(window_width), height = u32(window_height)}},
+		layerCount = 1,
+		colorAttachmentCount = 1,
+		pColorAttachments = &color_attachment_info,
+		pDepthAttachment = &depth_attachment_info,
+	}
+	vk.CmdBeginRendering(cb, &rendering_info)
+	// here we swap the y-axis since vulkan y-axis point down
+	vp := vk.Viewport {
+		x        = 0,
+		y        = f32(window_height),
+		width    = f32(window_width),
+		height   = -f32(window_height),
+		minDepth = 0,
+		maxDepth = 1,
+	}
+	vk.CmdSetViewport(cb, 0, 1, &vp)
+	scissor := vk.Rect2D {
+		extent = {width = u32(window_width), height = u32(window_height)},
+	}
+	vk.CmdSetScissor(cb, 0, 1, &scissor)
+	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
+	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &descriptor_set_tex, 0, nil)
+	v_offset: vk.DeviceSize
+	vk.CmdBindVertexBuffers(cb, 0, 1, &v_buffer, &v_offset)
+	vk.CmdBindIndexBuffer(cb, v_buffer, vk.DeviceSize(v_buf_size), .UINT32)
+	vk.CmdPushConstants(
+		cb,
+		pipeline_layout,
+		{.VERTEX},
+		0,
+		size_of(vk.DeviceAddress),
+		&shader_data_buffers[frame_index].device_addr,
+	)
+	vk.CmdDrawIndexed(cb, u32(index_count), 3, 0, 0, 0) // draws each triangle
+	vk.CmdEndRendering(cb)
+	barrier_present := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+		srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
+		dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+		dstAccessMask = {},
+		oldLayout = .COLOR_ATTACHMENT_OPTIMAL,
+		newLayout = .PRESENT_SRC_KHR,
+		image = swapchain_images[image_index],
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+	barrier_present_dep_info := vk.DependencyInfo {
+		sType                   = .DEPENDENCY_INFO,
+		imageMemoryBarrierCount = 1,
+		pImageMemoryBarriers    = &barrier_present,
+	}
+	vk.CmdPipelineBarrier2(cb, &barrier_present_dep_info)
+	vk.EndCommandBuffer(cb)
+	// Submit command buffer
+	wait_stages := vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT}
+	submit_info := vk.SubmitInfo {
+		sType                = .SUBMIT_INFO,
+		waitSemaphoreCount   = 1,
+		pWaitSemaphores      = &present_semaphores[frame_index],
+		pWaitDstStageMask    = &wait_stages,
+		commandBufferCount   = 1,
+		pCommandBuffers      = &cb,
+		signalSemaphoreCount = 1,
+		pSignalSemaphores    = &render_semaphores[image_index],
+	}
+	chk(vk.QueueSubmit(queue, 1, &submit_info, fences[frame_index]))
+	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
+	// present
+	present_info := vk.PresentInfoKHR {
+		sType              = .PRESENT_INFO_KHR,
+		waitSemaphoreCount = 1,
+		pWaitSemaphores    = &render_semaphores[image_index],
+		swapchainCount     = 1,
+		pSwapchains        = &swapchain,
+		pImageIndices      = &image_index,
+	}
+	chk_swapchain(vk.QueuePresentKHR(queue, &present_info))
 
-		// recreate swapchain when needed
-		if update_swapchain {
-			vk.DeviceWaitIdle(device)
-			chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface, &surface_caps))
-			swapchain_create_info.oldSwapchain = swapchain
-			swapchain_create_info.imageExtent = {
-				width  = u32(window_width),
-				height = u32(window_height),
-			}
-			chk(vk.CreateSwapchainKHR(device, &swapchain_create_info, nil, &swapchain))
-			for i in 0 ..< swapchain_image_count {
-				vk.DestroyImageView(device, swapchain_image_views[i], nil)
-			}
-			chk(vk.GetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nil))
-			resize(&swapchain_images, swapchain_image_count)
-			chk(
-				vk.GetSwapchainImagesKHR(
-					device,
-					swapchain,
-					&swapchain_image_count,
-					raw_data(swapchain_images),
-				),
-			)
-			resize(&swapchain_image_views, swapchain_image_count)
-			for i in 0 ..< swapchain_image_count {
-				view_create_info := vk.ImageViewCreateInfo {
-					sType = .IMAGE_VIEW_CREATE_INFO,
-					image = swapchain_images[i],
-					viewType = .D2,
-					format = image_format,
-					subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-				}
-				chk(vk.CreateImageView(device, &view_create_info, nil, &swapchain_image_views[i]))
-			}
-			vk.DestroySwapchainKHR(device, swapchain_create_info.oldSwapchain, nil)
-			vma.destroy_image(allocator, depth_image, depth_image_alloc)
-			vk.DestroyImageView(device, depth_image_view, nil)
-			depth_image_create_info.extent = {
-				width  = u32(window_width),
-				height = u32(window_height),
-			}
-			alloc_create_info := vma.Allocation_Create_Info {
-				flags = {.Dedicated_Memory},
-				usage = .Auto,
-			}
-			chk(
-				vma.create_image(
-					allocator,
-					depth_image_create_info,
-					alloc_create_info,
-					&depth_image,
-					&depth_image_alloc,
-					nil,
-				),
-			)
+	// recreate swapchain when needed
+	if update_swapchain {
+		vk.DeviceWaitIdle(device)
+		chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface, &surface_caps))
+		swapchain_create_info.oldSwapchain = swapchain
+		swapchain_create_info.imageExtent = {
+			width  = u32(window_width),
+			height = u32(window_height),
+		}
+		chk(vk.CreateSwapchainKHR(device, &swapchain_create_info, nil, &swapchain))
+		for swi in swapchain_image_views {
+			vk.DestroyImageView(device, swi, nil)
+		}
+		swapchain_image_count: u32
+		chk(vk.GetSwapchainImagesKHR(device, swapchain, &swapchain_image_count, nil))
+		resize(&swapchain_images, swapchain_image_count)
+		chk(
+			vk.GetSwapchainImagesKHR(
+				device,
+				swapchain,
+				&swapchain_image_count,
+				raw_data(swapchain_images),
+			),
+		)
+		resize(&swapchain_image_views, swapchain_image_count)
+		for i in 0 ..< swapchain_image_count {
 			view_create_info := vk.ImageViewCreateInfo {
 				sType = .IMAGE_VIEW_CREATE_INFO,
-				image = depth_image,
+				image = swapchain_images[i],
 				viewType = .D2,
-				format = depth_format,
-				subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
+				format = IMAGE_FORMAT,
+				subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 			}
-			chk(vk.CreateImageView(device, &view_create_info, nil, &depth_image_view))
+			chk(vk.CreateImageView(device, &view_create_info, nil, &swapchain_image_views[i]))
 		}
+		vk.DestroySwapchainKHR(device, swapchain_create_info.oldSwapchain, nil)
+		vma.destroy_image(allocator, depth_image, depth_image_alloc)
+		vk.DestroyImageView(device, depth_image_view, nil)
+		depth_image_create_info.extent = {
+			width  = u32(window_width),
+			height = u32(window_height),
+		}
+		alloc_create_info := vma.Allocation_Create_Info {
+			flags = {.Dedicated_Memory},
+			usage = .Auto,
+		}
+		chk(
+			vma.create_image(
+				allocator,
+				depth_image_create_info,
+				alloc_create_info,
+				&depth_image,
+				&depth_image_alloc,
+				nil,
+			),
+		)
+		view_create_info := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			image = depth_image,
+			viewType = .D2,
+			format = depth_format,
+			subresourceRange = {aspectMask = {.DEPTH}, levelCount = 1, layerCount = 1},
+		}
+		chk(vk.CreateImageView(device, &view_create_info, nil, &depth_image_view))
 	}
+}
 
-	// Cleanup
+cleanup :: proc() {
 	chk(vk.DeviceWaitIdle(device))
-	for i in 0 ..< max_frames_in_flight {
+	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		vk.DestroyFence(device, fences[i], nil)
 		vk.DestroySemaphore(device, present_semaphores[i], nil)
 		vma.unmap_memory(allocator, shader_data_buffers[i].alloc)
@@ -1213,14 +1149,8 @@ Texture :: struct {
 	sampler: vk.Sampler,
 }
 
-window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
-	context = runtime.default_context()
-	update_swapchain = true
+window_resize :: proc(width, height: i32) {
 	window_width = width
 	window_height = height
-}
-
-scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
-	context = runtime.default_context()
-	scroll_offset = [2]f64{x_offset, y_offset}
+	update_swapchain = true
 }
