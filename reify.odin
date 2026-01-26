@@ -34,6 +34,7 @@ Swapchain_Context :: struct {
 	handle:            vk.SwapchainKHR,
 	images:            [dynamic]vk.Image,
 	views:             [dynamic]vk.ImageView,
+	render_semaphores: [dynamic]vk.Semaphore,
 	depth_create_info: vk.ImageCreateInfo,
 	depth_image:       vk.Image,
 	depth_view:        vk.ImageView,
@@ -42,18 +43,23 @@ Swapchain_Context :: struct {
 }
 swapchain: Swapchain_Context
 
+mesh_buffer: vk.Buffer
+mesh_buffer_alloc: vma.Allocation
 meshes: [dynamic]Mesh
 
-fences := [MAX_FRAME_IN_FLIGHT]vk.Fence{}
-present_semaphores := [MAX_FRAME_IN_FLIGHT]vk.Semaphore{}
-render_semaphores := [dynamic]vk.Semaphore{}
-shader_data_buffers := [MAX_FRAME_IN_FLIGHT]Shader_Data_Buffer{}
-command_buffers := [MAX_FRAME_IN_FLIGHT]vk.CommandBuffer{}
+Frame_Context :: struct {
+	fence:              vk.Fence,
+	present_semaphore:  vk.Semaphore,
+	shader_data_buffer: Shader_Data_Buffer,
+	command_buffer:     vk.CommandBuffer,
+	draw_meshes:        [dynamic]MeshHandle,
+}
+frame_contexts := [MAX_FRAME_IN_FLIGHT]Frame_Context{}
+frame_index := 0
+
 pipeline: vk.Pipeline
 pipeline_layout: vk.PipelineLayout
 descriptor_set_tex: vk.DescriptorSet
-mesh_buffer: vk.Buffer
-mesh_buffer_alloc: vma.Allocation
 textures := [3]Texture{}
 texture_descriptors := [dynamic]vk.DescriptorImageInfo{}
 desc_set_layout_tex: vk.DescriptorSetLayout
@@ -61,7 +67,6 @@ descriptor_pool: vk.DescriptorPool
 command_pool: vk.CommandPool
 shader_module: vk.ShaderModule
 
-frame_index := 0
 window_width, window_height: c.int
 
 init :: proc(window: glfw.WindowHandle) {
@@ -118,28 +123,28 @@ init :: proc(window: glfw.WindowHandle) {
 				device.allocator,
 				u_buffer_create_info,
 				u_buffer_alloc_create_info,
-				&shader_data_buffers[i].buffer,
-				&shader_data_buffers[i].alloc,
+				&frame_contexts[i].shader_data_buffer.buffer,
+				&frame_contexts[i].shader_data_buffer.alloc,
 				nil,
 			),
 		)
 		chk(
 			vma.map_memory(
 				device.allocator,
-				shader_data_buffers[i].alloc,
-				&shader_data_buffers[i].mapped,
+				frame_contexts[i].shader_data_buffer.alloc,
+				&frame_contexts[i].shader_data_buffer.mapped,
 			),
 		)
 		u_buffer_bda_info := vk.BufferDeviceAddressInfo {
 			sType  = .BUFFER_DEVICE_ADDRESS_INFO,
-			buffer = shader_data_buffers[i].buffer,
+			buffer = frame_contexts[i].shader_data_buffer.buffer,
 		}
-		shader_data_buffers[i].device_addr = vk.GetBufferDeviceAddress(
+		frame_contexts[i].shader_data_buffer.device_addr = vk.GetBufferDeviceAddress(
 			device.handle,
 			&u_buffer_bda_info,
 		)
 	}
-	resize(&render_semaphores, len(swapchain.images))
+	resize(&swapchain.render_semaphores, len(swapchain.images))
 	semaphore_create_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
@@ -148,10 +153,17 @@ init :: proc(window: glfw.WindowHandle) {
 		flags = {.SIGNALED},
 	}
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
-		chk(vk.CreateFence(device.handle, &fence_create_info, nil, &fences[i]))
-		chk(vk.CreateSemaphore(device.handle, &semaphore_create_info, nil, &present_semaphores[i]))
+		chk(vk.CreateFence(device.handle, &fence_create_info, nil, &frame_contexts[i].fence))
+		chk(
+			vk.CreateSemaphore(
+				device.handle,
+				&semaphore_create_info,
+				nil,
+				&frame_contexts[i].present_semaphore,
+			),
+		)
 	}
-	for &s in render_semaphores {
+	for &s in swapchain.render_semaphores {
 		chk(vk.CreateSemaphore(device.handle, &semaphore_create_info, nil, &s))
 	}
 
@@ -165,19 +177,24 @@ init :: proc(window: glfw.WindowHandle) {
 	command_buffer_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
-		commandBufferCount = MAX_FRAME_IN_FLIGHT,
+		commandBufferCount = 1,
 	}
-	chk(
-		vk.AllocateCommandBuffers(
-			device.handle,
-			&command_buffer_alloc_info,
-			raw_data(command_buffers[:]),
-		),
-	)
+	// TODO: This is awkward because by keeping command buffer in the Frame_Context
+	// we cannot allocator an array of command buffers so we do it as two separate
+	// allocations
+	for &fctx in frame_contexts {
+		chk(
+			vk.AllocateCommandBuffers(
+				device.handle,
+				&command_buffer_alloc_info,
+				&fctx.command_buffer,
+			),
+		)
+	}
 
 	// LOADING TEXTURES
 	// TODO: Extract loading textures into it's own function and return a texture
-	// handle to demo with the image loadig stuff moved there too
+	// handle to demo with the image loading stuff moved there too
 	for t, i in textures {
 		ktx_texture: ^ktx.Texture
 		filename := fmt.tprintf("assets/suzanne%d.ktx", i)
@@ -560,9 +577,20 @@ init :: proc(window: glfw.WindowHandle) {
 	chk(vk.CreateGraphicsPipelines(device.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
 }
 
-draw :: proc(shader_data: ^Shader_Data) {
-	chk(vk.WaitForFences(device.handle, 1, &fences[frame_index], true, max(u64)))
-	chk(vk.ResetFences(device.handle, 1, &fences[frame_index]))
+start :: proc() -> ^Frame_Context {
+	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
+	return &frame_contexts[frame_index]
+}
+
+// Called automatically from `present` but separated so cleanup is easy to read
+@(private = "file")
+end :: proc(fctx: ^Frame_Context) {
+	clear(&fctx.draw_meshes)
+}
+
+present :: proc(fctx: ^Frame_Context, shader_data: ^Shader_Data) {
+	chk(vk.WaitForFences(device.handle, 1, &fctx.fence, true, max(u64)))
+	chk(vk.ResetFences(device.handle, 1, &fctx.fence))
 	// Next image
 	image_index: u32
 	chk_swapchain(
@@ -570,17 +598,17 @@ draw :: proc(shader_data: ^Shader_Data) {
 			device.handle,
 			swapchain.handle,
 			max(u64),
-			present_semaphores[frame_index],
+			fctx.present_semaphore,
 			0,
 			&image_index,
 		),
 	)
 
 	// Store updated shader data
-	mem.copy(shader_data_buffers[frame_index].mapped, shader_data, size_of(Shader_Data))
+	mem.copy(fctx.shader_data_buffer.mapped, shader_data, size_of(Shader_Data))
 
 	// Record command buffer
-	cb := command_buffers[frame_index]
+	cb := fctx.command_buffer
 	chk(vk.ResetCommandBuffer(cb, {}))
 	cb_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
@@ -659,8 +687,10 @@ draw :: proc(shader_data: ^Shader_Data) {
 	vk.CmdSetScissor(cb, 0, 1, &scissor)
 	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
 	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &descriptor_set_tex, 0, nil)
-	{
-		m := meshes[0]
+
+	for mh in fctx.draw_meshes {
+		if mh.idx >= len(meshes) do continue
+		m := meshes[mh.idx]
 		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
 		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
 		vk.CmdPushConstants(
@@ -669,10 +699,11 @@ draw :: proc(shader_data: ^Shader_Data) {
 			{.VERTEX},
 			0,
 			size_of(vk.DeviceAddress),
-			&shader_data_buffers[frame_index].device_addr,
+			&fctx.shader_data_buffer.device_addr,
 		)
 		vk.CmdDrawIndexed(cb, u32(m.index_count), 3, 0, 0, 0) // draws each triangle
 	}
+
 	vk.CmdEndRendering(cb)
 	barrier_present := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
@@ -697,20 +728,19 @@ draw :: proc(shader_data: ^Shader_Data) {
 	submit_info := vk.SubmitInfo {
 		sType                = .SUBMIT_INFO,
 		waitSemaphoreCount   = 1,
-		pWaitSemaphores      = &present_semaphores[frame_index],
+		pWaitSemaphores      = &fctx.present_semaphore,
 		pWaitDstStageMask    = &wait_stages,
 		commandBufferCount   = 1,
 		pCommandBuffers      = &cb,
 		signalSemaphoreCount = 1,
-		pSignalSemaphores    = &render_semaphores[image_index],
+		pSignalSemaphores    = &swapchain.render_semaphores[image_index],
 	}
-	chk(vk.QueueSubmit(device.queue, 1, &submit_info, fences[frame_index]))
-	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
+	chk(vk.QueueSubmit(device.queue, 1, &submit_info, fctx.fence))
 	// present
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
 		waitSemaphoreCount = 1,
-		pWaitSemaphores    = &render_semaphores[image_index],
+		pWaitSemaphores    = &swapchain.render_semaphores[image_index],
 		swapchainCount     = 1,
 		pSwapchains        = &swapchain.handle,
 		pImageIndices      = &image_index,
@@ -724,22 +754,22 @@ draw :: proc(shader_data: ^Shader_Data) {
 		chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(device.physical, surface, &surface_caps))
 		swapchain_context_init(&swapchain, surface, surface_caps, recreate = true)
 	}
+
+	end(fctx)
 }
 
 cleanup :: proc() {
 	chk(vk.DeviceWaitIdle(device.handle))
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
-		vk.DestroyFence(device.handle, fences[i], nil)
-		vk.DestroySemaphore(device.handle, present_semaphores[i], nil)
-		vma.unmap_memory(device.allocator, shader_data_buffers[i].alloc)
+		fctx := frame_contexts[i]
+		vk.DestroyFence(device.handle, fctx.fence, nil)
+		vk.DestroySemaphore(device.handle, fctx.present_semaphore, nil)
+		vma.unmap_memory(device.allocator, fctx.shader_data_buffer.alloc)
 		vma.destroy_buffer(
 			device.allocator,
-			shader_data_buffers[i].buffer,
-			shader_data_buffers[i].alloc,
+			fctx.shader_data_buffer.buffer,
+			fctx.shader_data_buffer.alloc,
 		)
-	}
-	for s in render_semaphores {
-		vk.DestroySemaphore(device.handle, s, nil)
 	}
 
 	swapchain_context_destroy(&swapchain)
@@ -996,6 +1026,9 @@ swapchain_context_destroy :: proc(sc: ^Swapchain_Context) {
 	for iv in sc.views {
 		vk.DestroyImageView(device.handle, iv, nil)
 	}
+	for s in sc.render_semaphores {
+		vk.DestroySemaphore(device.handle, s, nil)
+	}
 	vk.DestroySwapchainKHR(device.handle, sc.handle, nil)
 }
 
@@ -1177,4 +1210,9 @@ load_mesh :: proc(vertices: []Vertex, indices: []u32) -> MeshHandle {
 	}
 	append(&meshes, m)
 	return handle
+}
+
+draw_mesh :: proc(fctx: ^Frame_Context, m: MeshHandle) {
+	if len(meshes) <= m.idx do return
+	append(&fctx.draw_meshes, m)
 }

@@ -88,7 +88,9 @@ main :: proc() {
 			translation_mat := linalg.matrix4_translate(instance_pos)
 			shader_data.model[i] = translation_mat * rotation_mat
 		}
-		re.draw(&shader_data)
+		fctx := re.start()
+		re.draw_mesh(fctx, suzanne_mesh)
+		re.present(fctx, &shader_data)
 	}
 }
 
