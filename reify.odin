@@ -498,7 +498,7 @@ present :: proc(fctx: ^Frame_Context, shader_data: ^Shader_Data) {
 
 	for tm, i in fctx.draw_meshes {
 		if tm.mesh.idx >= len(meshes) do continue
-		if tm.mesh.idx >= len(textures) do continue // TODO default texture?
+		if tm.texture.idx >= len(textures) do continue // TODO default texture?
 		m := meshes[tm.mesh.idx]
 		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
 		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
@@ -1225,6 +1225,7 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 		pImageInfo      = raw_data(texture_descriptors),
 	}
 	vk.UpdateDescriptorSets(device.handle, 1, &write_desc_set, 0, nil)
+	vk.QueueWaitIdle(device.queue)
 
 	return Texture_Handle{idx = idx}
 }
