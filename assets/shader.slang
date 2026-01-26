@@ -22,9 +22,8 @@ struct PushConstants {
 struct ShaderData {
   float4x4 projection;
   float4x4 view;
-  float4x4 model[3];
+  float4x4 model;
   float4 lightPos;
-  uint32_t selected;
 };
 
 struct VSOutput {
@@ -42,7 +41,7 @@ PushConstants pc;
 [shader("vertex")]
 VSOutput vertMain(VSInput input, uint instanceIndex: SV_VulkanInstanceID) {
   VSOutput output;
-  float4x4 modelMat = pc.shaderData->model[0];
+  float4x4 modelMat = pc.shaderData->model;
   output.Normal =
       mul((float3x3)mul(pc.shaderData->view, modelMat), input.Normal);
   output.UV = input.UV;

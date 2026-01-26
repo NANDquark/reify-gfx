@@ -57,6 +57,7 @@ main :: proc() {
 	for !glfw.WindowShouldClose(window) {
 		frame_start_time := time.now()
 		frame_delta_time = time.diff(last_frame_time, frame_start_time)
+		dt := f32(time.duration_seconds(frame_delta_time))
 		last_frame_time = frame_start_time
 
 		glfw.PollEvents()
@@ -72,7 +73,7 @@ main :: proc() {
 		last_mouse_pos = mouse_pos
 		// Zoom with mouse wheel
 		if scroll_offset != {} {
-			cam_pos.z += f32(scroll_offset.y) * 0.025 * f32(frame_delta_time)
+			cam_pos.z += f32(scroll_offset.y) * 0.025 * dt
 		}
 
 		// Update shader data
