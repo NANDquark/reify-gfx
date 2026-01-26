@@ -14,6 +14,7 @@ import vk "vendor:vulkan"
 
 SHADER_BYTES :: #load("assets/shader.spv")
 MESH_BUFFER_SIZE :: 10 * mem.Megabyte
+DESCRIPTOR_POOL_COUNT :: 1024
 MAX_FRAME_IN_FLIGHT :: 2
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 
@@ -52,7 +53,7 @@ Frame_Context :: struct {
 	present_semaphore:  vk.Semaphore,
 	shader_data_buffer: Shader_Data_Buffer,
 	command_buffer:     vk.CommandBuffer,
-	draw_meshes:        [dynamic]MeshHandle,
+	draw_meshes:        [dynamic]Textured_Mesh,
 }
 frame_contexts := [MAX_FRAME_IN_FLIGHT]Frame_Context{}
 frame_index := 0
@@ -60,7 +61,7 @@ frame_index := 0
 pipeline: vk.Pipeline
 pipeline_layout: vk.PipelineLayout
 descriptor_set_tex: vk.DescriptorSet
-textures := [3]Texture{}
+textures := [dynamic]Texture{}
 texture_descriptors := [dynamic]vk.DescriptorImageInfo{}
 desc_set_layout_tex: vk.DescriptorSetLayout
 descriptor_pool: vk.DescriptorPool
@@ -82,9 +83,6 @@ init :: proc(window: glfw.WindowHandle) {
 	swapchain_context_init(&swapchain, surface, surface_caps)
 
 	// Setup Mesh Buffer
-	// TODO: This mess must be moved out to the demo code size and an API developed
-	// to pass vertices in and update the buffers
-
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		size  = vk.DeviceSize(MESH_BUFFER_SIZE),
@@ -104,6 +102,18 @@ init :: proc(window: glfw.WindowHandle) {
 			nil,
 		),
 	)
+
+	// Init global sampler
+	sampler_create_info := vk.SamplerCreateInfo {
+		sType            = .SAMPLER_CREATE_INFO,
+		magFilter        = .LINEAR,
+		minFilter        = .LINEAR,
+		mipmapMode       = .LINEAR,
+		anisotropyEnable = true,
+		maxAnisotropy    = 8, // widely used
+		maxLod           = vk.LOD_CLAMP_NONE,
+	}
+	chk(vk.CreateSampler(device.handle, &sampler_create_info, nil, &global_sampler))
 
 	// CPU & GPU Sync
 	// TODO separate this somewhere with some abstraction around creating a uniform
@@ -195,202 +205,8 @@ init :: proc(window: glfw.WindowHandle) {
 	// LOADING TEXTURES
 	// TODO: Extract loading textures into it's own function and return a texture
 	// handle to demo with the image loading stuff moved there too
-	for t, i in textures {
-		ktx_texture: ^ktx.Texture
-		filename := fmt.tprintf("assets/suzanne%d.ktx", i)
-		cfilename := strings.clone_to_cstring(filename, context.temp_allocator)
-		err := ktx.Texture_CreateFromNamedFile(
-			cfilename,
-			{.TEXTURE_CREATE_LOAD_IMAGE_DATA},
-			&ktx_texture,
-		)
-		if err != .SUCCESS {
-			panic(fmt.tprintf("failed to load ktx image '%s', err=%v", filename, err))
-		}
-		defer ktx.Texture_Destroy(ktx_texture)
-		tex_img_create_info := vk.ImageCreateInfo {
-			sType = .IMAGE_CREATE_INFO,
-			imageType = .D2,
-			format = ktx.Texture_GetVkFormat(ktx_texture),
-			extent = vk.Extent3D {
-				width = ktx_texture.baseWidth,
-				height = ktx_texture.baseHeight,
-				depth = 1,
-			},
-			mipLevels = ktx_texture.numLevels,
-			arrayLayers = 1,
-			samples = {._1},
-			tiling = .OPTIMAL,
-			usage = {.TRANSFER_DST, .SAMPLED},
-			initialLayout = .UNDEFINED,
-		}
-		tex_image_alloc_create_info := vma.Allocation_Create_Info {
-			usage = .Auto,
-		}
-		chk(
-			vma.create_image(
-				device.allocator,
-				tex_img_create_info,
-				tex_image_alloc_create_info,
-				&textures[i].image,
-				&textures[i].alloc,
-				nil,
-			),
-		)
-		tex_view_create_info := vk.ImageViewCreateInfo {
-			sType = .IMAGE_VIEW_CREATE_INFO,
-			image = textures[i].image,
-			viewType = .D2,
-			format = tex_img_create_info.format,
-			subresourceRange = vk.ImageSubresourceRange {
-				aspectMask = {.COLOR},
-				levelCount = ktx_texture.numLevels,
-				layerCount = 1,
-			},
-		}
-		chk(vk.CreateImageView(device.handle, &tex_view_create_info, nil, &textures[i].view))
-		img_src_buffer: vk.Buffer
-		img_src_alloc: vma.Allocation
-		img_src_buffer_create_info := vk.BufferCreateInfo {
-			sType = .BUFFER_CREATE_INFO,
-			size  = vk.DeviceSize(ktx_texture.dataSize),
-			usage = {.TRANSFER_SRC},
-		}
-		img_src_alloc_create_info := vma.Allocation_Create_Info {
-			flags = {.Host_Access_Sequential_Write, .Mapped},
-			usage = .Auto,
-		}
-		chk(
-			vma.create_buffer(
-				device.allocator,
-				img_src_buffer_create_info,
-				img_src_alloc_create_info,
-				&img_src_buffer,
-				&img_src_alloc,
-				nil,
-			),
-		)
-		img_src_buffer_ptr: rawptr
-		chk(vma.map_memory(device.allocator, img_src_alloc, &img_src_buffer_ptr))
-		mem.copy(img_src_buffer_ptr, ktx_texture.pData, int(ktx_texture.dataSize))
-		fence_one_time_create_info := vk.FenceCreateInfo {
-			sType = .FENCE_CREATE_INFO,
-		}
-		fence_one_time: vk.Fence
-		chk(vk.CreateFence(device.handle, &fence_one_time_create_info, nil, &fence_one_time))
-		cb_one_time: vk.CommandBuffer
-		cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
-			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
-			commandPool        = command_pool,
-			commandBufferCount = 1,
-		}
-		chk(vk.AllocateCommandBuffers(device.handle, &cb_one_time_alloc_info, &cb_one_time))
-		cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
-			sType = .COMMAND_BUFFER_BEGIN_INFO,
-			flags = {.ONE_TIME_SUBMIT},
-		}
-		chk(vk.BeginCommandBuffer(cb_one_time, &cb_one_time_buf_begin_info))
-		barrier_tex_img := vk.ImageMemoryBarrier2 {
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			srcStageMask = {},
-			srcAccessMask = {},
-			dstStageMask = {.TRANSFER},
-			dstAccessMask = {.TRANSFER_WRITE},
-			oldLayout = .UNDEFINED,
-			newLayout = .TRANSFER_DST_OPTIMAL,
-			image = textures[i].image,
-			subresourceRange = vk.ImageSubresourceRange {
-				aspectMask = {.COLOR},
-				levelCount = ktx_texture.numLevels,
-				layerCount = 1,
-			},
-		}
-		barrier_tex_info := vk.DependencyInfo {
-			sType                   = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers    = &barrier_tex_img,
-		}
-		vk.CmdPipelineBarrier2(cb_one_time, &barrier_tex_info)
-		copy_regions := [dynamic]vk.BufferImageCopy{}
-		defer delete(copy_regions)
-		for j in 0 ..< ktx_texture.numLevels {
-			mip_offset: c.size_t = 0
-			ret := ktx.Texture_GetImageOffset(ktx_texture, j, 0, 0, &mip_offset)
-			append(
-				&copy_regions,
-				vk.BufferImageCopy {
-					bufferOffset = vk.DeviceSize(mip_offset),
-					imageSubresource = vk.ImageSubresourceLayers {
-						aspectMask = {.COLOR},
-						mipLevel = u32(j),
-						layerCount = 1,
-					},
-					imageExtent = vk.Extent3D {
-						width = ktx_texture.baseWidth >> j,
-						height = ktx_texture.baseHeight >> j,
-						depth = 1,
-					},
-				},
-			)
-		}
-		vk.CmdCopyBufferToImage(
-			cb_one_time,
-			img_src_buffer,
-			textures[i].image,
-			.TRANSFER_DST_OPTIMAL,
-			u32(len(copy_regions)),
-			raw_data(copy_regions),
-		)
-		barrier_tex_read := vk.ImageMemoryBarrier2 {
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			srcStageMask = {.TRANSFER},
-			srcAccessMask = {.TRANSFER_WRITE},
-			dstStageMask = {.FRAGMENT_SHADER},
-			dstAccessMask = {.SHADER_READ},
-			oldLayout = .TRANSFER_DST_OPTIMAL,
-			newLayout = .READ_ONLY_OPTIMAL,
-			image = textures[i].image,
-			subresourceRange = vk.ImageSubresourceRange {
-				aspectMask = {.COLOR},
-				levelCount = ktx_texture.numLevels,
-				layerCount = 1,
-			},
-		}
-		barrier_tex_info.pImageMemoryBarriers = &barrier_tex_read
-		vk.CmdPipelineBarrier2(cb_one_time, &barrier_tex_info)
-		chk(vk.EndCommandBuffer(cb_one_time))
 
-		one_time_submit_info := vk.SubmitInfo {
-			sType              = .SUBMIT_INFO,
-			commandBufferCount = 1,
-			pCommandBuffers    = &cb_one_time,
-		}
-		chk(vk.QueueSubmit(device.queue, 1, &one_time_submit_info, fence_one_time))
-		chk(vk.WaitForFences(device.handle, 1, &fence_one_time, true, max(u64)))
-		vk.DestroyFence(device.handle, fence_one_time, nil)
-		vma.unmap_memory(device.allocator, img_src_alloc)
-		vk.FreeCommandBuffers(device.handle, command_pool, 1, &cb_one_time)
-		vma.destroy_buffer(device.allocator, img_src_buffer, img_src_alloc)
-		// sampler
-		sampler_create_info := vk.SamplerCreateInfo {
-			sType            = .SAMPLER_CREATE_INFO,
-			magFilter        = .LINEAR,
-			minFilter        = .LINEAR,
-			mipmapMode       = .LINEAR,
-			anisotropyEnable = true,
-			maxAnisotropy    = 8, // widely used
-			maxLod           = f32(ktx_texture.numLevels),
-		}
-		chk(vk.CreateSampler(device.handle, &sampler_create_info, nil, &textures[i].sampler))
-		append(
-			&texture_descriptors,
-			vk.DescriptorImageInfo {
-				sampler = textures[i].sampler,
-				imageView = textures[i].view,
-				imageLayout = .READ_ONLY_OPTIMAL,
-			},
-		)
-	}
+
 	desc_var_flags := vk.DescriptorBindingFlags{.VARIABLE_DESCRIPTOR_COUNT}
 	desc_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -399,7 +215,7 @@ init :: proc(window: glfw.WindowHandle) {
 	}
 	desc_layout_binding_tex := vk.DescriptorSetLayoutBinding {
 		descriptorType  = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = u32(len(textures)),
+		descriptorCount = DESCRIPTOR_POOL_COUNT,
 		stageFlags      = {.FRAGMENT},
 	}
 	desc_layout_tex_create_info := vk.DescriptorSetLayoutCreateInfo {
@@ -418,7 +234,7 @@ init :: proc(window: glfw.WindowHandle) {
 	)
 	pool_size := vk.DescriptorPoolSize {
 		type            = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = u32(len(textures)),
+		descriptorCount = DESCRIPTOR_POOL_COUNT,
 	}
 	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
@@ -427,7 +243,7 @@ init :: proc(window: glfw.WindowHandle) {
 		pPoolSizes    = &pool_size,
 	}
 	chk(vk.CreateDescriptorPool(device.handle, &desc_pool_create_info, nil, &descriptor_pool))
-	var_desc_count := u32(len(textures))
+	var_desc_count := u32(DESCRIPTOR_POOL_COUNT)
 	var_desc_count_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
 		sType              = .DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
 		descriptorSetCount = 1,
@@ -441,15 +257,6 @@ init :: proc(window: glfw.WindowHandle) {
 		pSetLayouts        = &desc_set_layout_tex,
 	}
 	chk(vk.AllocateDescriptorSets(device.handle, &tex_desc_set_alloc, &descriptor_set_tex))
-	write_desc_set := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = descriptor_set_tex,
-		dstBinding      = 0,
-		descriptorCount = u32(len(texture_descriptors)),
-		descriptorType  = .COMBINED_IMAGE_SAMPLER,
-		pImageInfo      = raw_data(texture_descriptors),
-	}
-	vk.UpdateDescriptorSets(device.handle, 1, &write_desc_set, 0, nil)
 
 	// LOADING SHADERS
 	// TODO: extract loading a shader and creating a pipeline into its own thing
@@ -462,8 +269,8 @@ init :: proc(window: glfw.WindowHandle) {
 
 	// GRAPHICS PIPELINE
 	push_constant_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX},
-		size       = size_of(vk.DeviceAddress),
+		stageFlags = {.VERTEX, .FRAGMENT},
+		size       = size_of(Push_Constants),
 	}
 	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
@@ -606,6 +413,7 @@ present :: proc(fctx: ^Frame_Context, shader_data: ^Shader_Data) {
 
 	// Store updated shader data
 	mem.copy(fctx.shader_data_buffer.mapped, shader_data, size_of(Shader_Data))
+	vma.flush_allocation(device.allocator, fctx.shader_data_buffer.alloc, 0, size_of(Shader_Data))
 
 	// Record command buffer
 	cb := fctx.command_buffer
@@ -688,20 +496,28 @@ present :: proc(fctx: ^Frame_Context, shader_data: ^Shader_Data) {
 	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
 	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &descriptor_set_tex, 0, nil)
 
-	for mh in fctx.draw_meshes {
-		if mh.idx >= len(meshes) do continue
-		m := meshes[mh.idx]
+	for tm, i in fctx.draw_meshes {
+		if tm.mesh.idx >= len(meshes) do continue
+		if tm.mesh.idx >= len(textures) do continue // TODO default texture?
+		m := meshes[tm.mesh.idx]
 		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
 		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
+		push_constants := Push_Constants {
+			shader_data   = fctx.shader_data_buffer.device_addr,
+			texture_index = u32(tm.texture.idx),
+			offset_x      = f32(i - 1) * 3,
+		}
 		vk.CmdPushConstants(
 			cb,
 			pipeline_layout,
-			{.VERTEX},
+			{.VERTEX, .FRAGMENT},
 			0,
-			size_of(vk.DeviceAddress),
-			&fctx.shader_data_buffer.device_addr,
+			size_of(Push_Constants),
+			&push_constants,
 		)
-		vk.CmdDrawIndexed(cb, u32(m.index_count), 3, 0, 0, 0) // draws each triangle
+		// Arg #3 is the count of instances to draw
+		// TODO: Batch up draws of the same mesh + same texture
+		vk.CmdDrawIndexed(cb, u32(m.index_count), 1, 0, 0, 0) // draws each triangle
 	}
 
 	vk.CmdEndRendering(cb)
@@ -890,18 +706,11 @@ Mat4 :: matrix[4, 4]f32
 Shader_Data :: struct #align (16) {
 	projection: Mat4,
 	view:       Mat4,
-	model:      [3]Mat4,
+	model:      Mat4,
 	light_pos:  [4]f32,
-	selected:   u32,
-	_pad:       [3]u32, // align to 16-byte chunks
 }
 
-Texture :: struct {
-	alloc:   vma.Allocation,
-	image:   vk.Image,
-	view:    vk.ImageView,
-	sampler: vk.Sampler,
-}
+global_sampler: vk.Sampler
 
 window_resize :: proc(width, height: i32) {
 	window_width = width
@@ -1159,13 +968,14 @@ Mesh :: struct {
 	vertex_offset: vk.DeviceSize, // location within the global buffer
 	index_offset:  vk.DeviceSize, // location within the global buffer
 	index_count:   int,
+	texture_index: int,
 }
 
-MeshHandle :: struct {
+Mesh_Handle :: struct {
 	idx: int,
 }
 
-load_mesh :: proc(vertices: []Vertex, indices: []u32) -> MeshHandle {
+load_mesh :: proc(vertices: []Vertex, indices: []u32) -> Mesh_Handle {
 	@(static) buffer_offset: uintptr = 0
 	MESH_ALIGNMENT :: 16
 
@@ -1200,7 +1010,7 @@ load_mesh :: proc(vertices: []Vertex, indices: []u32) -> MeshHandle {
 	vma.unmap_memory(device.allocator, mesh_buffer_alloc)
 	buffer_offset = end_offset
 
-	handle := MeshHandle {
+	handle := Mesh_Handle {
 		idx = len(meshes),
 	}
 	m := Mesh {
@@ -1212,7 +1022,220 @@ load_mesh :: proc(vertices: []Vertex, indices: []u32) -> MeshHandle {
 	return handle
 }
 
-draw_mesh :: proc(fctx: ^Frame_Context, m: MeshHandle) {
+draw_mesh :: proc(fctx: ^Frame_Context, m: Mesh_Handle, t: Texture_Handle) {
 	if len(meshes) <= m.idx do return
-	append(&fctx.draw_meshes, m)
+	append(&fctx.draw_meshes, Textured_Mesh{mesh = m, texture = t})
+}
+
+Texture :: struct {
+	alloc:   vma.Allocation,
+	image:   vk.Image,
+	view:    vk.ImageView,
+	sampler: vk.Sampler,
+}
+
+Texture_Handle :: struct {
+	idx: int,
+}
+
+texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
+	tex: Texture
+	tex_img_create_info := vk.ImageCreateInfo {
+		sType = .IMAGE_CREATE_INFO,
+		imageType = .D2,
+		format = ktx.Texture_GetVkFormat(raw_img),
+		extent = vk.Extent3D{width = raw_img.baseWidth, height = raw_img.baseHeight, depth = 1},
+		mipLevels = raw_img.numLevels,
+		arrayLayers = 1,
+		samples = {._1},
+		tiling = .OPTIMAL,
+		usage = {.TRANSFER_DST, .SAMPLED},
+		initialLayout = .UNDEFINED,
+	}
+	chk(
+		vma.create_image(
+			device.allocator,
+			tex_img_create_info,
+			{usage = .Auto},
+			&tex.image,
+			&tex.alloc,
+			nil,
+		),
+	)
+	tex_view_create_info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		image = tex.image,
+		viewType = .D2,
+		format = tex_img_create_info.format,
+		subresourceRange = vk.ImageSubresourceRange {
+			aspectMask = {.COLOR},
+			levelCount = raw_img.numLevels,
+			layerCount = 1,
+		},
+	}
+	chk(vk.CreateImageView(device.handle, &tex_view_create_info, nil, &tex.view))
+	img_src_buffer: vk.Buffer
+	img_src_alloc: vma.Allocation
+	img_src_buffer_create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = vk.DeviceSize(raw_img.dataSize),
+		usage = {.TRANSFER_SRC},
+	}
+	img_src_alloc_create_info := vma.Allocation_Create_Info {
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+		usage = .Auto,
+	}
+	chk(
+		vma.create_buffer(
+			device.allocator,
+			img_src_buffer_create_info,
+			img_src_alloc_create_info,
+			&img_src_buffer,
+			&img_src_alloc,
+			nil,
+		),
+	)
+	img_src_buffer_ptr: rawptr
+	chk(vma.map_memory(device.allocator, img_src_alloc, &img_src_buffer_ptr))
+	mem.copy(img_src_buffer_ptr, raw_img.pData, int(raw_img.dataSize))
+	vma.flush_allocation(device.allocator, img_src_alloc, 0, vk.DeviceSize(raw_img.dataSize))
+	fence_one_time_create_info := vk.FenceCreateInfo {
+		sType = .FENCE_CREATE_INFO,
+	}
+	fence_one_time: vk.Fence
+	chk(vk.CreateFence(device.handle, &fence_one_time_create_info, nil, &fence_one_time))
+	cb_one_time: vk.CommandBuffer
+	cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
+		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+		commandPool        = command_pool,
+		commandBufferCount = 1,
+	}
+	chk(vk.AllocateCommandBuffers(device.handle, &cb_one_time_alloc_info, &cb_one_time))
+	cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}
+	chk(vk.BeginCommandBuffer(cb_one_time, &cb_one_time_buf_begin_info))
+	barrier_tex_img := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcStageMask = {},
+		srcAccessMask = {},
+		dstStageMask = {.TRANSFER},
+		dstAccessMask = {.TRANSFER_WRITE},
+		oldLayout = .UNDEFINED,
+		newLayout = .TRANSFER_DST_OPTIMAL,
+		image = tex.image,
+		subresourceRange = vk.ImageSubresourceRange {
+			aspectMask = {.COLOR},
+			levelCount = raw_img.numLevels,
+			layerCount = 1,
+		},
+	}
+	barrier_tex_info := vk.DependencyInfo {
+		sType                   = .DEPENDENCY_INFO,
+		imageMemoryBarrierCount = 1,
+		pImageMemoryBarriers    = &barrier_tex_img,
+	}
+	vk.CmdPipelineBarrier2(cb_one_time, &barrier_tex_info)
+	copy_regions := [dynamic]vk.BufferImageCopy{}
+	defer delete(copy_regions)
+	for j in 0 ..< raw_img.numLevels {
+		mip_offset: c.size_t = 0
+		ret := ktx.Texture_GetImageOffset(raw_img, j, 0, 0, &mip_offset)
+		if ret != .SUCCESS {
+			panic("failed to get texture image offset")
+		}
+		append(
+			&copy_regions,
+			vk.BufferImageCopy {
+				bufferOffset = vk.DeviceSize(mip_offset),
+				imageSubresource = vk.ImageSubresourceLayers {
+					aspectMask = {.COLOR},
+					mipLevel = u32(j),
+					layerCount = 1,
+				},
+				imageExtent = vk.Extent3D {
+					width = max(1, raw_img.baseWidth >> j),
+					height = max(1, raw_img.baseHeight >> j),
+					depth = 1,
+				},
+			},
+		)
+	}
+	vk.CmdCopyBufferToImage(
+		cb_one_time,
+		img_src_buffer,
+		tex.image,
+		.TRANSFER_DST_OPTIMAL,
+		u32(len(copy_regions)),
+		raw_data(copy_regions),
+	)
+	barrier_tex_read := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcStageMask = {.TRANSFER},
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstStageMask = {.FRAGMENT_SHADER},
+		dstAccessMask = {.SHADER_READ},
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .READ_ONLY_OPTIMAL,
+		image = tex.image,
+		subresourceRange = vk.ImageSubresourceRange {
+			aspectMask = {.COLOR},
+			levelCount = raw_img.numLevels,
+			layerCount = 1,
+		},
+	}
+	barrier_tex_info.pImageMemoryBarriers = &barrier_tex_read
+	vk.CmdPipelineBarrier2(cb_one_time, &barrier_tex_info)
+	chk(vk.EndCommandBuffer(cb_one_time))
+
+	one_time_submit_info := vk.SubmitInfo {
+		sType              = .SUBMIT_INFO,
+		commandBufferCount = 1,
+		pCommandBuffers    = &cb_one_time,
+	}
+	chk(vk.QueueSubmit(device.queue, 1, &one_time_submit_info, fence_one_time))
+	chk(vk.WaitForFences(device.handle, 1, &fence_one_time, true, max(u64)))
+
+	vk.DestroyFence(device.handle, fence_one_time, nil)
+	vma.unmap_memory(device.allocator, img_src_alloc)
+	vk.FreeCommandBuffers(device.handle, command_pool, 1, &cb_one_time)
+	vma.destroy_buffer(device.allocator, img_src_buffer, img_src_alloc)
+
+	// sampler
+	tex.sampler = global_sampler
+	append(
+		&texture_descriptors,
+		vk.DescriptorImageInfo {
+			sampler = tex.sampler,
+			imageView = tex.view,
+			imageLayout = .READ_ONLY_OPTIMAL,
+		},
+	)
+
+	idx := len(textures)
+	append(&textures, tex)
+
+	write_desc_set := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = descriptor_set_tex,
+		dstBinding      = 0,
+		descriptorCount = u32(len(texture_descriptors)),
+		descriptorType  = .COMBINED_IMAGE_SAMPLER,
+		pImageInfo      = raw_data(texture_descriptors),
+	}
+	vk.UpdateDescriptorSets(device.handle, 1, &write_desc_set, 0, nil)
+
+	return Texture_Handle{idx = idx}
+}
+
+Textured_Mesh :: struct {
+	mesh:    Mesh_Handle,
+	texture: Texture_Handle,
+}
+
+Push_Constants :: struct {
+	shader_data:   vk.DeviceAddress,
+	texture_index: u32,
+	offset_x:      f32,
 }

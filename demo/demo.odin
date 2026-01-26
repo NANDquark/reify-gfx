@@ -1,11 +1,14 @@
 package demo
 
 import re ".."
+import "../lib/ktx"
 import "../lib/obj"
 import "base:runtime"
 import "core:c"
+import "core:fmt"
 import "core:log"
 import "core:math/linalg"
+import "core:strings"
 import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -39,15 +42,15 @@ main :: proc() {
 	window_height, window_width := glfw.GetWindowSize(window)
 	re.init(window)
 
-	vertices, indices := load_suzanne()
+	vertices, indices := load_suzanne_model()
 	suzanne_mesh := re.load_mesh(vertices, indices)
+	textures := load_suzanne_textures()
 
 	shader_data := re.Shader_Data {
 		light_pos = [4]f32{0, -10, 10, 0},
-		selected  = 1,
 	}
 	cam_pos := [3]f32{0.0, 0.0, -6.0}
-	object_rotations := [3][3]f32{}
+	object_rotations := [3]f32{}
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -63,33 +66,35 @@ main :: proc() {
 		if glfw.GetMouseButton(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
 			delta := last_mouse_pos - mouse_pos
 			sensitivity :: 0.005
-			object_rotations[shader_data.selected].x += f32(-delta.y) * sensitivity // -y to account for y-axis flip
-			object_rotations[shader_data.selected].y -= f32(delta.x) * sensitivity
+			object_rotations.x += f32(-delta.y) * sensitivity // -y to account for y-axis flip
+			object_rotations.y -= f32(delta.x) * sensitivity
 		}
 		last_mouse_pos = mouse_pos
 		// Zoom with mouse wheel
 		if scroll_offset != {} {
 			cam_pos.z += f32(scroll_offset.y) * 0.025 * f32(frame_delta_time)
 		}
-		//
+
 		// Update shader data
 		window_ratio := f32(window_width) / f32(window_height)
 		shader_data.projection = linalg.matrix4_perspective(linalg.PI / 4, window_ratio, 0.1, 32)
 		shader_data.view = linalg.matrix4_translate(cam_pos)
-		for i in 0 ..< 3 {
-			instance_pos := [3]f32{f32(i - 1) * 3, 0, 0}
-			rotation_quat := linalg.quaternion_from_euler_angles(
-				object_rotations[i].x,
-				object_rotations[i].y,
-				object_rotations[i].z,
-				.XYZ,
-			)
-			rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
-			translation_mat := linalg.matrix4_translate(instance_pos)
-			shader_data.model[i] = translation_mat * rotation_mat
-		}
+		instance_pos := [3]f32{0, 0, 0}
+		rotation_quat := linalg.quaternion_from_euler_angles(
+			object_rotations.x,
+			object_rotations.y,
+			object_rotations.z,
+			.XYZ,
+		)
+		rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
+		translation_mat := linalg.matrix4_translate(instance_pos)
+		shader_data.model = translation_mat * rotation_mat
+
+		// Draw!
 		fctx := re.start()
-		re.draw_mesh(fctx, suzanne_mesh)
+		for i in 0 ..< 3 {
+			re.draw_mesh(fctx, suzanne_mesh, textures[i])
+		}
 		re.present(fctx, &shader_data)
 	}
 }
@@ -104,7 +109,7 @@ scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	scroll_offset = [2]f64{x_offset, y_offset}
 }
 
-load_suzanne :: proc() -> ([]re.Vertex, []u32) {
+load_suzanne_model :: proc() -> ([]re.Vertex, []u32) {
 	suzanne_obj, ok := obj.load_obj_file_from_file("./assets/suzanne.obj")
 	if !ok {
 		panic("failed to load suzanne.obj asset")
@@ -134,4 +139,25 @@ load_suzanne :: proc() -> ([]re.Vertex, []u32) {
 		}
 	}
 	return vertices[:], indices[:]
+}
+
+load_suzanne_textures :: proc() -> []re.Texture_Handle {
+	textures: [dynamic]re.Texture_Handle
+	for i in 0 ..< 3 {
+		ktx_texture: ^ktx.Texture
+		filename := fmt.tprintf("assets/suzanne%d.ktx", i)
+		cfilename := strings.clone_to_cstring(filename, context.temp_allocator)
+		err := ktx.Texture_CreateFromNamedFile(
+			cfilename,
+			{.TEXTURE_CREATE_LOAD_IMAGE_DATA},
+			&ktx_texture,
+		)
+		if err != .SUCCESS {
+			panic(fmt.tprintf("failed to load ktx image '%s', err=%v", filename, err))
+		}
+		tex := re.texture_load(ktx_texture)
+		append(&textures, tex)
+		ktx.Texture_Destroy(ktx_texture)
+	}
+	return textures[:]
 }
