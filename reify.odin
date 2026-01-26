@@ -7,13 +7,13 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 import "lib/ktx"
-import "lib/obj"
 import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
 
 SHADER_BYTES :: #load("assets/shader.spv")
+MESH_BUFFER_SIZE :: 10 * mem.Megabyte
 MAX_FRAME_IN_FLIGHT :: 2
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 
@@ -42,6 +42,8 @@ Swapchain_Context :: struct {
 }
 swapchain: Swapchain_Context
 
+meshes: [dynamic]Mesh
+
 fences := [MAX_FRAME_IN_FLIGHT]vk.Fence{}
 present_semaphores := [MAX_FRAME_IN_FLIGHT]vk.Semaphore{}
 render_semaphores := [dynamic]vk.Semaphore{}
@@ -50,11 +52,8 @@ command_buffers := [MAX_FRAME_IN_FLIGHT]vk.CommandBuffer{}
 pipeline: vk.Pipeline
 pipeline_layout: vk.PipelineLayout
 descriptor_set_tex: vk.DescriptorSet
-v_buffer: vk.Buffer
-v_buffer_alloc: vma.Allocation
-v_buf_size: int
-i_buf_size: int
-index_count: int
+mesh_buffer: vk.Buffer
+mesh_buffer_alloc: vma.Allocation
 textures := [3]Texture{}
 texture_descriptors := [dynamic]vk.DescriptorImageInfo{}
 desc_set_layout_tex: vk.DescriptorSetLayout
@@ -77,43 +76,13 @@ init :: proc(window: glfw.WindowHandle) {
 	chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(device.physical, surface, &surface_caps))
 	swapchain_context_init(&swapchain, surface, surface_caps)
 
-	// LOAD MESH
+	// Setup Mesh Buffer
 	// TODO: This mess must be moved out to the demo code size and an API developed
 	// to pass vertices in and update the buffers
-	suzanne_obj, ok := obj.load_obj_file_from_file("./assets/suzanne.obj")
-	if !ok {
-		panic("failed to load suzanne.obj asset")
-	}
-	vertices := [dynamic]Vertex{}
-	indices := [dynamic]u32{}
-	for o in suzanne_obj.objects {
-		for g in o.groups {
-			for f in g.face_element {
-				for i in 0 ..< 3 {
-					// TODO this could be improved by de-duplicating and re-using existing vertex indices
-					p_ind := f.position[i] - 1
-					p := g.vertex_position[p_ind]
-					n_ind := f.normal[i] - 1
-					n := g.vertex_normal[n_ind]
-					uv_ind := f.uv[i] - 1
-					uv := g.vertex_uv[uv_ind]
-					v := Vertex {
-						pos    = p.xyz,
-						normal = n.xyz,
-						uv     = uv.xy,
-					}
-					append(&vertices, v)
-					append(&indices, u32(len(indices)))
-				}
-			}
-		}
-	}
-	index_count = len(indices)
-	v_buf_size = size_of(Vertex) * len(vertices)
-	i_buf_size = size_of(u32) * len(indices)
+
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
-		size  = vk.DeviceSize(v_buf_size + i_buf_size),
+		size  = vk.DeviceSize(MESH_BUFFER_SIZE),
 		usage = {.VERTEX_BUFFER, .INDEX_BUFFER},
 	}
 	buffer_alloc_create_info := vma.Allocation_Create_Info {
@@ -125,19 +94,11 @@ init :: proc(window: glfw.WindowHandle) {
 			device.allocator,
 			buffer_create_info,
 			buffer_alloc_create_info,
-			&v_buffer,
-			&v_buffer_alloc,
+			&mesh_buffer,
+			&mesh_buffer_alloc,
 			nil,
 		),
 	)
-	v_bytes := len(vertices) * size_of(Vertex)
-	i_bytes := len(indices) * size_of(u32)
-	buffer_ptr: rawptr
-	chk(vma.map_memory(device.allocator, v_buffer_alloc, &buffer_ptr))
-	mem.copy(buffer_ptr, raw_data(vertices), v_bytes)
-	buffer_ptr_offset := rawptr(uintptr(buffer_ptr) + uintptr(v_bytes))
-	mem.copy(buffer_ptr_offset, raw_data(indices), i_bytes)
-	vma.unmap_memory(device.allocator, v_buffer_alloc)
 
 	// CPU & GPU Sync
 	// TODO separate this somewhere with some abstraction around creating a uniform
@@ -698,18 +659,20 @@ draw :: proc(shader_data: ^Shader_Data) {
 	vk.CmdSetScissor(cb, 0, 1, &scissor)
 	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
 	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &descriptor_set_tex, 0, nil)
-	v_offset: vk.DeviceSize
-	vk.CmdBindVertexBuffers(cb, 0, 1, &v_buffer, &v_offset)
-	vk.CmdBindIndexBuffer(cb, v_buffer, vk.DeviceSize(v_buf_size), .UINT32)
-	vk.CmdPushConstants(
-		cb,
-		pipeline_layout,
-		{.VERTEX},
-		0,
-		size_of(vk.DeviceAddress),
-		&shader_data_buffers[frame_index].device_addr,
-	)
-	vk.CmdDrawIndexed(cb, u32(index_count), 3, 0, 0, 0) // draws each triangle
+	{
+		m := meshes[0]
+		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
+		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
+		vk.CmdPushConstants(
+			cb,
+			pipeline_layout,
+			{.VERTEX},
+			0,
+			size_of(vk.DeviceAddress),
+			&shader_data_buffers[frame_index].device_addr,
+		)
+		vk.CmdDrawIndexed(cb, u32(m.index_count), 3, 0, 0, 0) // draws each triangle
+	}
 	vk.CmdEndRendering(cb)
 	barrier_present := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
@@ -781,7 +744,7 @@ cleanup :: proc() {
 
 	swapchain_context_destroy(&swapchain)
 
-	vma.destroy_buffer(device.allocator, v_buffer, v_buffer_alloc)
+	vma.destroy_buffer(device.allocator, mesh_buffer, mesh_buffer_alloc)
 	for t in textures {
 		vk.DestroyImageView(device.handle, t.view, nil)
 		vk.DestroySampler(device.handle, t.sampler, nil)
@@ -797,8 +760,8 @@ cleanup :: proc() {
 	context_destroy(&device)
 }
 
-chk :: proc(res: vk.Result) {
-	if res != .SUCCESS do panic(fmt.tprintf("chk failed: %v", res))
+chk :: proc(res: vk.Result, loc := #caller_location) {
+	if res != .SUCCESS do panic(fmt.tprintf("chk failed: %v, loc=%v,%v", res, loc.file_path, loc.line))
 }
 
 chk_swapchain :: proc(result: vk.Result) {
@@ -1157,4 +1120,61 @@ context_destroy :: proc(gctx: ^Device_Context) {
 	vma.destroy_allocator(gctx.allocator)
 	vk.DestroyDevice(gctx.handle, nil)
 	vk.DestroyInstance(gctx.instance, nil)
+}
+
+Mesh :: struct {
+	vertex_offset: vk.DeviceSize, // location within the global buffer
+	index_offset:  vk.DeviceSize, // location within the global buffer
+	index_count:   int,
+}
+
+MeshHandle :: struct {
+	idx: int,
+}
+
+load_mesh :: proc(vertices: []Vertex, indices: []u32) -> MeshHandle {
+	@(static) buffer_offset: uintptr = 0
+	MESH_ALIGNMENT :: 16
+
+	v_bytes := len(vertices) * size_of(Vertex)
+	i_bytes := len(indices) * size_of(u32)
+	v_offset := mem.align_forward_uintptr(buffer_offset, MESH_ALIGNMENT)
+	i_offset := mem.align_forward_uintptr(v_offset + uintptr(v_bytes), MESH_ALIGNMENT)
+	end_offset := i_offset + uintptr(i_bytes)
+
+	if end_offset > MESH_BUFFER_SIZE {
+		panic("mesh_buffer is too full")
+	}
+
+	base_ptr: rawptr
+	chk(vma.map_memory(device.allocator, mesh_buffer_alloc, &base_ptr))
+
+	// copy vertices
+	v_write_ptr := rawptr(uintptr(base_ptr) + v_offset)
+	mem.copy(v_write_ptr, raw_data(vertices), v_bytes)
+
+	// copy indices
+	i_write_ptr := rawptr(uintptr(base_ptr) + uintptr(i_offset))
+	mem.copy(i_write_ptr, raw_data(indices), i_bytes)
+
+	// cleanup
+	vma.flush_allocation(
+		device.allocator,
+		mesh_buffer_alloc,
+		vk.DeviceSize(v_offset),
+		vk.DeviceSize(end_offset - v_offset),
+	)
+	vma.unmap_memory(device.allocator, mesh_buffer_alloc)
+	buffer_offset = end_offset
+
+	handle := MeshHandle {
+		idx = len(meshes),
+	}
+	m := Mesh {
+		index_count   = len(indices),
+		vertex_offset = vk.DeviceSize(v_offset),
+		index_offset  = vk.DeviceSize(i_offset),
+	}
+	append(&meshes, m)
+	return handle
 }

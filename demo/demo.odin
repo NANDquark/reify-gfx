@@ -1,6 +1,7 @@
 package demo
 
 import re ".."
+import "../lib/obj"
 import "base:runtime"
 import "core:c"
 import "core:log"
@@ -37,6 +38,9 @@ main :: proc() {
 	glfw.SetScrollCallback(window, scroll)
 	window_height, window_width := glfw.GetWindowSize(window)
 	re.init(window)
+
+	vertices, indices := load_suzanne()
+	suzanne_mesh := re.load_mesh(vertices, indices)
 
 	shader_data := re.Shader_Data {
 		light_pos = [4]f32{0, -10, 10, 0},
@@ -96,4 +100,36 @@ window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
 scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	context = runtime.default_context()
 	scroll_offset = [2]f64{x_offset, y_offset}
+}
+
+load_suzanne :: proc() -> ([]re.Vertex, []u32) {
+	suzanne_obj, ok := obj.load_obj_file_from_file("./assets/suzanne.obj")
+	if !ok {
+		panic("failed to load suzanne.obj asset")
+	}
+	vertices := [dynamic]re.Vertex{}
+	indices := [dynamic]u32{}
+	for o in suzanne_obj.objects {
+		for g in o.groups {
+			for f in g.face_element {
+				for i in 0 ..< 3 {
+					// TODO this could be improved by de-duplicating and re-using existing vertex indices
+					p_ind := f.position[i] - 1
+					p := g.vertex_position[p_ind]
+					n_ind := f.normal[i] - 1
+					n := g.vertex_normal[n_ind]
+					uv_ind := f.uv[i] - 1
+					uv := g.vertex_uv[uv_ind]
+					v := re.Vertex {
+						pos    = p.xyz,
+						normal = n.xyz,
+						uv     = uv.xy,
+					}
+					append(&vertices, v)
+					append(&indices, u32(len(indices)))
+				}
+			}
+		}
+	}
+	return vertices[:], indices[:]
 }
