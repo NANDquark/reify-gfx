@@ -22,6 +22,7 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 
 	// SETUP WINDOW
+	glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11)
 	if !bool(glfw.Init()) {
 		panic("failed to initialize GLFW")
 	}
@@ -46,11 +47,10 @@ main :: proc() {
 	suzanne_mesh := re.load_mesh(vertices, indices)
 	textures := load_suzanne_textures()
 
-	shader_data := re.Shader_Data {
-		light_pos = [4]f32{0, -10, 10, 0},
-	}
+
 	cam_pos := [3]f32{0.0, 0.0, -6.0}
 	object_rotations := [3]f32{}
+	light_pos := [4]f32{0, -10, 10, 0}
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -78,25 +78,25 @@ main :: proc() {
 
 		// Update shader data
 		window_ratio := f32(window_width) / f32(window_height)
-		shader_data.projection = linalg.matrix4_perspective(linalg.PI / 4, window_ratio, 0.1, 32)
-		shader_data.view = linalg.matrix4_translate(cam_pos)
-		instance_pos := [3]f32{0, 0, 0}
+		projection := linalg.matrix4_perspective(linalg.PI / 4, window_ratio, 0.1, 32)
+		view := linalg.matrix4_translate(cam_pos)
 		rotation_quat := linalg.quaternion_from_euler_angles(
 			object_rotations.x,
 			object_rotations.y,
 			object_rotations.z,
 			.XYZ,
 		)
-		rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
-		translation_mat := linalg.matrix4_translate(instance_pos)
-		shader_data.model = translation_mat * rotation_mat
 
 		// Draw!
-		fctx := re.start()
+		fctx := re.start(projection, view, light_pos)
 		for i in 0 ..< 3 {
-			re.draw_mesh(fctx, suzanne_mesh, textures[i])
+			instance_pos := [3]f32{f32(i - 1) * 0.2, 0, 0}
+			rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
+			translation_mat := linalg.matrix4_translate(instance_pos)
+			transform := translation_mat * rotation_mat
+			re.draw_mesh(fctx, suzanne_mesh, textures[i], transform)
 		}
-		re.present(fctx, &shader_data)
+		re.present(fctx)
 	}
 }
 
