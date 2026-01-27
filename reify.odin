@@ -47,6 +47,10 @@ mesh_buffer: vk.Buffer
 mesh_buffer_alloc: vma.Allocation
 meshes: [dynamic]Mesh
 
+TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
+tex_staging_buffer: vk.Buffer
+tex_staging_alloc: vma.Allocation
+
 Frame_Context :: struct {
 	fence:              vk.Fence,
 	present_semaphore:  vk.Semaphore,
@@ -98,6 +102,27 @@ init :: proc(window: glfw.WindowHandle) {
 			buffer_alloc_create_info,
 			&mesh_buffer,
 			&mesh_buffer_alloc,
+			nil,
+		),
+	)
+
+	// Setup texture staging buffer
+	tex_staging_buffer_create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = vk.DeviceSize(TEX_STAGING_BUFFER_SIZE),
+		usage = {.TRANSFER_SRC},
+	}
+	tex_staging_alloc_create_info := vma.Allocation_Create_Info {
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+		usage = .Auto,
+	}
+	chk(
+		vma.create_buffer(
+			device.allocator,
+			tex_staging_buffer_create_info,
+			tex_staging_alloc_create_info,
+			&tex_staging_buffer,
+			&tex_staging_alloc,
 			nil,
 		),
 	)
@@ -1037,6 +1062,7 @@ Texture_Handle :: struct {
 	idx: int,
 }
 
+// TODO: convert this from KTX to something more generic & reasonable
 texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 	tex: Texture
 	tex_img_create_info := vk.ImageCreateInfo {
@@ -1073,31 +1099,12 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 		},
 	}
 	chk(vk.CreateImageView(device.handle, &tex_view_create_info, nil, &tex.view))
-	img_src_buffer: vk.Buffer
-	img_src_alloc: vma.Allocation
-	img_src_buffer_create_info := vk.BufferCreateInfo {
-		sType = .BUFFER_CREATE_INFO,
-		size  = vk.DeviceSize(raw_img.dataSize),
-		usage = {.TRANSFER_SRC},
-	}
-	img_src_alloc_create_info := vma.Allocation_Create_Info {
-		flags = {.Host_Access_Sequential_Write, .Mapped},
-		usage = .Auto,
-	}
-	chk(
-		vma.create_buffer(
-			device.allocator,
-			img_src_buffer_create_info,
-			img_src_alloc_create_info,
-			&img_src_buffer,
-			&img_src_alloc,
-			nil,
-		),
-	)
-	img_src_buffer_ptr: rawptr
-	chk(vma.map_memory(device.allocator, img_src_alloc, &img_src_buffer_ptr))
-	mem.copy(img_src_buffer_ptr, raw_img.pData, int(raw_img.dataSize))
-	vma.flush_allocation(device.allocator, img_src_alloc, 0, vk.DeviceSize(raw_img.dataSize))
+
+	tex_staging_buffer_ptr: rawptr
+	a := tex_staging_alloc
+	chk(vma.map_memory(device.allocator, tex_staging_alloc, &tex_staging_buffer_ptr))
+	mem.copy(tex_staging_buffer_ptr, raw_img.pData, int(raw_img.dataSize))
+	vma.flush_allocation(device.allocator, tex_staging_alloc, 0, vk.DeviceSize(raw_img.dataSize))
 	fence_one_time_create_info := vk.FenceCreateInfo {
 		sType = .FENCE_CREATE_INFO,
 	}
@@ -1163,7 +1170,7 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 	}
 	vk.CmdCopyBufferToImage(
 		cb_one_time,
-		img_src_buffer,
+		tex_staging_buffer,
 		tex.image,
 		.TRANSFER_DST_OPTIMAL,
 		u32(len(copy_regions)),
@@ -1197,9 +1204,8 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 	chk(vk.WaitForFences(device.handle, 1, &fence_one_time, true, max(u64)))
 
 	vk.DestroyFence(device.handle, fence_one_time, nil)
-	vma.unmap_memory(device.allocator, img_src_alloc)
+	vma.unmap_memory(device.allocator, tex_staging_alloc)
 	vk.FreeCommandBuffers(device.handle, command_pool, 1, &cb_one_time)
-	vma.destroy_buffer(device.allocator, img_src_buffer, img_src_alloc)
 
 	// sampler
 	tex.sampler = global_sampler
