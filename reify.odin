@@ -540,7 +540,7 @@ present :: proc(fctx: ^Frame_Context) {
 	)
 	// Arg #3 is the count of instances to draw
 	// TODO: Batch up draws of the same mesh + same texture
-	vk.CmdDrawIndexed(cb, u32(m.index_count), 1, 0, 0, 0)
+	vk.CmdDrawIndexed(cb, u32(m.index_count), u32(len(fctx.draw_meshes)), 0, 0, 0)
 
 	// }
 

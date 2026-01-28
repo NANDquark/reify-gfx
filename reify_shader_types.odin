@@ -7,6 +7,7 @@ import vk "vendor:vulkan"
 Instance_Data :: struct #align (16) {
     transform: Mat4f,
     texture_index: u32,
+    _pad0: [3]u32,
 }
 
 Shader_Data :: struct #align (16) {

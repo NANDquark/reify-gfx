@@ -139,6 +139,19 @@
                                                 "scalarType": "uint32"
                                             },
                                             "binding": {"kind": "uniform", "offset": 64, "size": 4, "elementStride": 0}
+                                        },
+                                        {
+                                            "name": "_pad0",
+                                            "type": {
+                                                "kind": "array",
+                                                "elementCount": 3,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "uint32"
+                                                },
+                                                "uniformStride": 4
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 68, "size": 12, "elementStride": 4}
                                         }
                                     ]
                                 },

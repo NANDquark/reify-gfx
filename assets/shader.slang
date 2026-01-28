@@ -19,15 +19,13 @@ const static uint MAX_INSTANCES = 3;
 struct Instance_Data {
   float4x4 transform;
   uint32_t texture_index;
-  // uint32_t _pad0[3];
+  uint32_t _pad0[3];
 };
 
 struct Shader_Data {
   float4x4 projection;
   float4x4 view;
   float4 light_pos;
-  // uint32_t num_instances;
-  // uint32_t _pad0[4];
   Instance_Data instances[MAX_INSTANCES];
 };
 

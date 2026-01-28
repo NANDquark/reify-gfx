@@ -90,7 +90,7 @@ main :: proc() {
 		// Draw!
 		fctx := re.start(projection, view, light_pos)
 		for i in 0 ..< 3 {
-			instance_pos := [3]f32{f32(i - 1) * 0.2, 0, 0}
+			instance_pos := [3]f32{f32(i - 1) * 2, 0, 0}
 			rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
 			translation_mat := linalg.matrix4_translate(instance_pos)
 			transform := translation_mat * rotation_mat
