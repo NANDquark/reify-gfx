@@ -407,7 +407,7 @@ init :: proc(window: glfw.WindowHandle) {
 	vk_chk(vk.CreateGraphicsPipelines(device.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
 }
 
-start :: proc(projection: Mat4, view: Mat4, light_pos: [4]f32) -> ^Frame_Context {
+start :: proc(projection: Mat4f, view: Mat4f, light_pos: [4]f32) -> ^Frame_Context {
 	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
 
 	fctx := &frame_contexts[frame_index]
@@ -648,28 +648,10 @@ Shader_Data_Buffer :: struct {
 	mapped:      rawptr,
 }
 
-Mat4 :: matrix[4, 4]f32
+Mat4f :: matrix[4, 4]f32
 
 // MAX_INSTANCES :: 10 * 1024
 MAX_INSTANCES :: 3
-
-Shader_Data :: struct {
-	projection: Mat4,
-	view:       Mat4,
-	light_pos:  [4]f32,
-	_pad0:      [4]u32,
-	instances:  [MAX_INSTANCES]Instance_Data,
-}
-
-Instance_Data :: struct {
-	texture_index: u32,
-	_pad0:         [7]u32,
-	transform:     Mat4,
-}
-
-Push_Constants :: struct {
-	shader_data: vk.DeviceAddress,
-}
 
 window_resize :: proc(width, height: i32) {
 	window_width = width
@@ -995,7 +977,7 @@ load_mesh :: proc(vertices: []Vertex, indices: []u32) -> Mesh_Handle {
 	return handle
 }
 
-draw_mesh :: proc(fctx: ^Frame_Context, m: Mesh_Handle, t: Texture_Handle, transform: Mat4) {
+draw_mesh :: proc(fctx: ^Frame_Context, m: Mesh_Handle, t: Texture_Handle, transform: Mat4f) {
 	// TODO: logging or something when MAX_INSTANCES is reached
 	if len(meshes) <= m.idx do return
 	if len(fctx.draw_meshes) >= MAX_INSTANCES do return

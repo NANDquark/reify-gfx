@@ -16,23 +16,23 @@ Sampler2D textures[];
 // const static uint MAX_INSTANCES = 10 * 1024;
 const static uint MAX_INSTANCES = 3;
 
-struct ShaderData {
+struct Instance_Data {
+  float4x4 transform;
+  uint32_t texture_index;
+  // uint32_t _pad0[3];
+};
+
+struct Shader_Data {
   float4x4 projection;
   float4x4 view;
-  float4 lightPos;
+  float4 light_pos;
   // uint32_t num_instances;
-  uint32_t _pad0[4];
-  InstanceData instances[MAX_INSTANCES];
+  // uint32_t _pad0[4];
+  Instance_Data instances[MAX_INSTANCES];
 };
 
-struct InstanceData {
-  uint32_t texture_index;
-  uint32_t _pad0[7];
-  float4x4 transform;
-};
-
-struct PushConstants {
-  ShaderData *shaderData;
+struct Push_Constants {
+  Shader_Data *shader_data;
 };
 
 struct VSOutput {
@@ -46,24 +46,27 @@ struct VSOutput {
 };
 
 [[vk::push_constant]]
-PushConstants pc;
+Push_Constants pc;
+
+// Reflection anchor: never bound, never accessed
+StructuredBuffer<Shader_Data> _ReflectionAnchor;
 
 [shader("vertex")]
 VSOutput vertMain(VSInput input, uint instanceIndex: SV_VulkanInstanceID) {
   VSOutput output;
-  InstanceData instance = pc.shaderData->instances[instanceIndex];
-  output.Normal =
-      mul((float3x3)mul(pc.shaderData->view, instance.transform), input.Normal);
+  Instance_Data instance = pc.shader_data->instances[instanceIndex];
+  output.Normal = mul((float3x3)mul(pc.shader_data->view, instance.transform),
+                      input.Normal);
   output.UV = input.UV;
-  output.Pos = mul(pc.shaderData->projection,
-                   mul(pc.shaderData->view,
+  output.Pos = mul(pc.shader_data->projection,
+                   mul(pc.shader_data->view,
                        mul(instance.transform, float4(input.Pos.xyz, 1.0))));
   output.InstanceIndex = instanceIndex;
 
   // Calculate view vectors required for lighting
-  float4 fragPos = mul(mul(pc.shaderData->view, instance.transform),
+  float4 fragPos = mul(mul(pc.shader_data->view, instance.transform),
                        float4(input.Pos.xyz, 1.0));
-  output.LightVec = pc.shaderData->lightPos.xyz - fragPos.xyz;
+  output.LightVec = pc.shader_data->light_pos.xyz - fragPos.xyz;
   output.ViewVec = -fragPos.xyz;
   output.TextureIndex = instance.texture_index;
   return output;
