@@ -25,16 +25,15 @@ Tool_Error :: enum {
 	JSON_Missing_Params,
 	JSON_Params_Invalid,
 	Write_Failed,
+	Type_Not_Found,
 }
 
-TARGET_NAMES := []string{"Instance_Data", "Shader_Data", "Push_Constants"}
+TARGET_NAMES := []string{"Vertex", "Instance_Data", "Shader_Data", "Push_Constants"}
 
 run :: proc() -> Error {
 	json_data := json.parse(SHADER_TYPES_BYTES) or_return
 	root, root_ok := json_data.(json.Object)
 	if !root_ok do return Tool_Error.JSON_Invalid
-	params, params_ok := root["parameters"]
-	if !params_ok do return Tool_Error.JSON_Missing_Params
 
 	sb: strings.Builder
 	strings.builder_init(&sb)
@@ -43,7 +42,7 @@ run :: proc() -> Error {
 	fmt.sbprintln(&sb, "// TODO: automatic padding based on slang offsets & sizes!\n")
 
 	for name in TARGET_NAMES {
-		value, found := json_search_by_name(params, name)
+		value, found := json_search_by_name(root, name)
 		if found {
 			st := convert_struct(value)
 			fmt.sbprintfln(&sb, "%s :: struct #align (16) {{", name)
@@ -55,6 +54,9 @@ run :: proc() -> Error {
 				fmt.sbprintfln(&sb, "    %s: %s,", field_name, odin_type)
 			}
 			fmt.sbprintln(&sb, "}\n")
+		} else {
+			fmt.printfln("'%s' type not found", name)
+			return .Type_Not_Found
 		}
 	}
 

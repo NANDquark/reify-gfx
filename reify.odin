@@ -59,7 +59,7 @@ Frame_Context :: struct {
 	present_semaphore:  vk.Semaphore,
 	shader_data_buffer: Shader_Data_Buffer,
 	command_buffer:     vk.CommandBuffer,
-	draw_meshes:        [dynamic]Mesh_Handle,
+	draw_meshes:        map[Mesh_Handle][dynamic]Instance_Data,
 }
 frame_contexts := [MAX_FRAME_IN_FLIGHT]Frame_Context{}
 frame_index := 0
@@ -411,7 +411,9 @@ start :: proc(projection: Mat4f, view: Mat4f, light_pos: [4]f32) -> ^Frame_Conte
 	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
 
 	fctx := &frame_contexts[frame_index]
-	clear(&fctx.draw_meshes)
+	for mh, &instances in fctx.draw_meshes {
+		clear(&instances)
+	}
 
 	shader_data.projection = projection
 	shader_data.view = view
@@ -521,28 +523,38 @@ present :: proc(fctx: ^Frame_Context) {
 	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
 	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &tex_desc_set, 0, nil)
 
-	// for m, i in fctx.draw_meshes {
-	// if m.idx >= len(meshes) do continue
+	index_offset := 0
+	for mh, mesh_instances in fctx.draw_meshes {
+		// copy all the meshes of a specific type as a contiguous block so we
+		// can draw indexed
+		for instance, i in mesh_instances {
+			shader_data.instances[index_offset + i] = instance
+		}
+		index_offset += len(mesh_instances)
 
-	m := meshes[0]
-	vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
-	vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
-	push_constants := Push_Constants {
-		shader_data = fctx.shader_data_buffer.device_addr,
+		m := meshes[mh.idx]
+		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
+		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
+		push_constants := Push_Constants {
+			shader_data = fctx.shader_data_buffer.device_addr,
+		}
+		vk.CmdPushConstants(
+			cb,
+			pipeline_layout,
+			{.VERTEX, .FRAGMENT},
+			0,
+			size_of(Push_Constants),
+			&push_constants,
+		)
+		vk.CmdDrawIndexed(
+			cb,
+			u32(m.index_count),
+			u32(len(mesh_instances)),
+			u32(index_offset),
+			0,
+			0,
+		)
 	}
-	vk.CmdPushConstants(
-		cb,
-		pipeline_layout,
-		{.VERTEX, .FRAGMENT},
-		0,
-		size_of(Push_Constants),
-		&push_constants,
-	)
-	// Arg #3 is the count of instances to draw
-	// TODO: Batch up draws of the same mesh + same texture
-	vk.CmdDrawIndexed(cb, u32(m.index_count), u32(len(fctx.draw_meshes)), 0, 0, 0)
-
-	// }
 
 	vk.CmdEndRendering(cb)
 	barrier_present := vk.ImageMemoryBarrier2 {
@@ -635,12 +647,6 @@ cleanup :: proc() {
 	context_destroy(&device)
 }
 
-Vertex :: struct {
-	pos:    [3]f32,
-	normal: [3]f32,
-	uv:     [2]f32,
-}
-
 Shader_Data_Buffer :: struct {
 	alloc:       vma.Allocation,
 	buffer:      vk.Buffer,
@@ -650,7 +656,6 @@ Shader_Data_Buffer :: struct {
 
 Mat4f :: matrix[4, 4]f32
 
-// MAX_INSTANCES :: 10 * 1024
 MAX_INSTANCES :: 3
 
 window_resize :: proc(width, height: i32) {
@@ -982,11 +987,12 @@ draw_mesh :: proc(fctx: ^Frame_Context, m: Mesh_Handle, t: Texture_Handle, trans
 	if len(meshes) <= m.idx do return
 	if len(fctx.draw_meshes) >= MAX_INSTANCES do return
 
-	num_instances := len(fctx.draw_meshes)
-	append(&fctx.draw_meshes, m)
-	instance := &shader_data.instances[num_instances]
-	instance.transform = transform
-	instance.texture_index = u32(t.idx)
+	mesh_instances, ok := &fctx.draw_meshes[m]
+	if !ok {
+		fctx.draw_meshes[m] = [dynamic]Instance_Data{}
+		mesh_instances = &fctx.draw_meshes[m]
+	}
+	append(mesh_instances, Instance_Data{transform = transform, texture_index = u32(t.idx)})
 }
 
 Texture :: struct {

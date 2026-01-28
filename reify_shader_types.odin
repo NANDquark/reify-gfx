@@ -4,6 +4,12 @@ import vk "vendor:vulkan"
 
 // TODO: automatic padding based on slang offsets & sizes!
 
+Vertex :: struct #align (16) {
+    pos: [3]f32,
+    normal: [3]f32,
+    uv: [2]f32,
+}
+
 Instance_Data :: struct #align (16) {
     transform: Mat4f,
     texture_index: u32,

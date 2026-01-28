@@ -5,10 +5,10 @@
  *
  */
 
-struct VSInput {
-  float3 Pos;
-  float3 Normal;
-  float2 UV;
+struct Vertex {
+  float3 pos;
+  float3 normal;
+  float2 uv;
 };
 
 Sampler2D textures[];
@@ -50,20 +50,20 @@ Push_Constants pc;
 StructuredBuffer<Shader_Data> _ReflectionAnchor;
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceIndex: SV_VulkanInstanceID) {
+VSOutput vertMain(Vertex input, uint instanceIndex: SV_VulkanInstanceID) {
   VSOutput output;
   Instance_Data instance = pc.shader_data->instances[instanceIndex];
   output.Normal = mul((float3x3)mul(pc.shader_data->view, instance.transform),
-                      input.Normal);
-  output.UV = input.UV;
+                      input.normal);
+  output.UV = input.uv;
   output.Pos = mul(pc.shader_data->projection,
                    mul(pc.shader_data->view,
-                       mul(instance.transform, float4(input.Pos.xyz, 1.0))));
+                       mul(instance.transform, float4(input.pos.xyz, 1.0))));
   output.InstanceIndex = instanceIndex;
 
   // Calculate view vectors required for lighting
   float4 fragPos = mul(mul(pc.shader_data->view, instance.transform),
-                       float4(input.Pos.xyz, 1.0));
+                       float4(input.pos.xyz, 1.0));
   output.LightVec = pc.shader_data->light_pos.xyz - fragPos.xyz;
   output.ViewVec = -fragPos.xyz;
   output.TextureIndex = instance.texture_index;

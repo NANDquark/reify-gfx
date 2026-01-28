@@ -175,10 +175,10 @@
                     "binding": {"kind": "varyingInput", "index": 0, "count": 3},
                     "type": {
                         "kind": "struct",
-                        "name": "VSInput",
+                        "name": "Vertex",
                         "fields": [
                             {
-                                "name": "Pos",
+                                "name": "pos",
                                 "type": {
                                     "kind": "vector",
                                     "elementCount": 3,
@@ -191,7 +191,7 @@
                                 "binding": {"kind": "varyingInput", "index": 0}
                             },
                             {
-                                "name": "Normal",
+                                "name": "normal",
                                 "type": {
                                     "kind": "vector",
                                     "elementCount": 3,
@@ -204,7 +204,7 @@
                                 "binding": {"kind": "varyingInput", "index": 1}
                             },
                             {
-                                "name": "UV",
+                                "name": "uv",
                                 "type": {
                                     "kind": "vector",
                                     "elementCount": 2,
