@@ -1,8 +1,6 @@
 /* Copyright (c) 2025-2026, Sascha Willems
  * Modified by NANDquark
- *
  * SPDX-License-Identifier: MIT
- *
  */
 
 struct Vertex {
@@ -13,8 +11,8 @@ struct Vertex {
 
 Sampler2D textures[];
 
-// const static uint MAX_INSTANCES = 10 * 1024;
-const static uint MAX_INSTANCES = 3;
+const static uint MAX_INSTANCES = 10 * 1024;
+// const static uint MAX_INSTANCES = 3;
 
 struct Instance_Data {
   float4x4 transform;

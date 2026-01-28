@@ -225,56 +225,52 @@ init :: proc(window: glfw.WindowHandle) {
 		)
 	}
 
-	// LOADING TEXTURES
-	// TODO: Extract loading textures into it's own function and return a texture
-	// handle to demo with the image loading stuff moved there too
-
-
-	desc_var_flags := vk.DescriptorBindingFlags{.VARIABLE_DESCRIPTOR_COUNT}
-	desc_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
+	// Textures globals
+	tex_desc_var_flags := vk.DescriptorBindingFlags{.VARIABLE_DESCRIPTOR_COUNT}
+	tex_desc_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
 		bindingCount  = 1,
-		pBindingFlags = &desc_var_flags,
+		pBindingFlags = &tex_desc_var_flags,
 	}
-	desc_layout_binding_tex := vk.DescriptorSetLayoutBinding {
+	tex_desc_layout_binding := vk.DescriptorSetLayoutBinding {
 		descriptorType  = .COMBINED_IMAGE_SAMPLER,
 		descriptorCount = TEX_DESCRIPTOR_POOL_COUNT,
 		stageFlags      = {.FRAGMENT},
 	}
-	desc_layout_tex_create_info := vk.DescriptorSetLayoutCreateInfo {
+	tex_desc_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		pNext        = &desc_binding_flags,
+		pNext        = &tex_desc_binding_flags,
 		bindingCount = 1,
-		pBindings    = &desc_layout_binding_tex,
+		pBindings    = &tex_desc_layout_binding,
 	}
 	vk_chk(
 		vk.CreateDescriptorSetLayout(
 			device.handle,
-			&desc_layout_tex_create_info,
+			&tex_desc_layout_create_info,
 			nil,
 			&tex_desc_set_layout,
 		),
 	)
-	pool_size := vk.DescriptorPoolSize {
+	tex_pool_size := vk.DescriptorPoolSize {
 		type            = .COMBINED_IMAGE_SAMPLER,
 		descriptorCount = TEX_DESCRIPTOR_POOL_COUNT,
 	}
-	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
+	tex_desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		maxSets       = 1,
 		poolSizeCount = 1,
-		pPoolSizes    = &pool_size,
+		pPoolSizes    = &tex_pool_size,
 	}
-	vk_chk(vk.CreateDescriptorPool(device.handle, &desc_pool_create_info, nil, &tex_desc_pool))
-	var_desc_count := u32(TEX_DESCRIPTOR_POOL_COUNT)
-	var_desc_count_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
+	vk_chk(vk.CreateDescriptorPool(device.handle, &tex_desc_pool_create_info, nil, &tex_desc_pool))
+	tex_desc_pool_count := u32(TEX_DESCRIPTOR_POOL_COUNT)
+	tex_desc_set_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
 		sType              = .DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
 		descriptorSetCount = 1,
-		pDescriptorCounts  = &var_desc_count,
+		pDescriptorCounts  = &tex_desc_pool_count,
 	}
 	tex_desc_set_alloc := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		pNext              = &var_desc_count_alloc_info,
+		pNext              = &tex_desc_set_alloc_info,
 		descriptorPool     = tex_desc_pool,
 		descriptorSetCount = 1,
 		pSetLayouts        = &tex_desc_set_layout,

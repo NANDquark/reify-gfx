@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 SHADER_TYPES_BYTES :: #load("../../assets/shader_types.json")
 
 main :: proc() {
@@ -38,6 +39,7 @@ run :: proc() -> Error {
 	sb: strings.Builder
 	strings.builder_init(&sb)
 	fmt.sbprintln(&sb, "package reify\n")
+	fmt.sbprintfln(&sb, "// Generated: %v\n", time.now())
 	fmt.sbprintln(&sb, "import vk \"vendor:vulkan\"\n")
 	fmt.sbprintln(&sb, "// TODO: automatic padding based on slang offsets & sizes!\n")
 

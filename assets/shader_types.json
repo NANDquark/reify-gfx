@@ -114,7 +114,7 @@
                             "name": "instances",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 10240,
                                 "elementType": {
                                     "kind": "struct",
                                     "name": "Instance_Data",
@@ -157,7 +157,7 @@
                                 },
                                 "uniformStride": 80
                             },
-                            "binding": {"kind": "uniform", "offset": 144, "size": 240, "elementStride": 80}
+                            "binding": {"kind": "uniform", "offset": 144, "size": 819200, "elementStride": 80}
                         }
                     ]
                 }
