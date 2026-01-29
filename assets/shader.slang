@@ -34,7 +34,6 @@ struct VSOutput {
   float2 uv;
   uint32_t instance_index;
   uint32_t texture_index;
-  float4x4 model;
 };
 
 [[vk::push_constant]]
@@ -53,9 +52,8 @@ VSOutput vertMain(Vertex input, uint instance_index: SV_VulkanInstanceID) {
   //                      mul(instance.model, float4(input.pos.xyz, 1.0))));
   // float4 debug = float4(input.pos.x / 100.0, input.pos.y / 100, 0, 1);
   // float4x4 mvp = pc.shader_data.projection;
-  float4x4 scale = float4x4(10, 0, 0, 0, 0, 10, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  float4x4 mvp = mul(pc.shader_data.projection, mul(instance.model, scale));
-  output.model = instance.model;
+  float4x4 mvp =
+      mul(pc.shader_data.projection, mul(pc.shader_data.view, instance.model));
   output.pos = mul(mvp, float4(input.pos.xyz, 1.0));
   // output.pos.x = debug.x;
   // output.pos.y = debug.y;
@@ -67,8 +65,8 @@ VSOutput vertMain(Vertex input, uint instance_index: SV_VulkanInstanceID) {
 }
 
 [shader("fragment")]
-// float4 fragMain(VSOutput input) {
-//   float3 color = textures[input.texture_index].Sample(input.uv).rgb;
-//   return float4(color.rgb, 1.0);
-// }
-float4 fragMain(VSOutput input) { return float4(1.0, 0.0, 0.0, 1.0); }
+float4 fragMain(VSOutput input) {
+  float3 color = textures[input.texture_index].Sample(input.uv).rgb;
+  return float4(color.rgb, 1.0);
+}
+// float4 fragMain(VSOutput input) { return float4(1.0, 0.0, 0.0, 1.0); }

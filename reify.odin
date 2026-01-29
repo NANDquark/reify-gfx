@@ -523,23 +523,9 @@ present :: proc(fctx: ^Frame_Context) {
 	next_instance_index := 0
 	for mh, mesh_instances in fctx.draw_meshes {
 		first_instance_index := next_instance_index
-
-		// copy all the meshes of a specific type as a contiguous block so we
-		// can draw indexed
-		for instance, i in mesh_instances {
-			shader_data.instances[first_instance_index + i] = instance
-		}
 		next_instance_index += len(mesh_instances)
-
-		// TEMP SCRATCH
-		// model := shader_data.instances[0].model
-		// view := shader_data.view
-		// projection := shader_data.projection
-		// mvp := projection * view * model
-		// v1 := [4]f32{-8, -8, 0, 1}
-		// pos := mvp * v1
-
 		m := meshes[mh.idx]
+
 		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
 		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT16)
 		sd := &shader_data
@@ -1088,7 +1074,7 @@ texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 				dstStageMask = {.FRAGMENT_SHADER},
 				dstAccessMask = {.SHADER_READ},
 				oldLayout = .TRANSFER_DST_OPTIMAL,
-				newLayout = .READ_ONLY_OPTIMAL,
+				newLayout = .SHADER_READ_ONLY_OPTIMAL,
 				image = tex.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
@@ -1113,10 +1099,11 @@ texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 		pImageInfo      = &{
 			sampler = tex.sampler,
 			imageView = tex.view,
-			imageLayout = .READ_ONLY_OPTIMAL,
+			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		},
 	}
 	vk.UpdateDescriptorSets(device.handle, 1, &write_desc_set, 0, nil)
+	vk_chk(vk.QueueWaitIdle(device.queue))
 
 	return Texture_Handle{idx = idx}
 }

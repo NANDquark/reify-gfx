@@ -205,7 +205,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 7},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 3},
                 "type": {
                     "kind": "struct",
                     "name": "VSOutput",
@@ -252,20 +252,6 @@
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 2}
-                        },
-                        {
-                            "name": "model",
-                            "type": {
-                                "kind": "matrix",
-                                "rowCount": 4,
-                                "columnCount": 4,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
-                            },
-                            "stage": "vertex",
-                            "binding": {"kind": "varyingOutput", "index": 3, "count": 4}
                         }
                     ]
                 }
@@ -292,7 +278,7 @@
                 {
                     "name": "input",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 7},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 3},
                     "type": {
                         "kind": "struct",
                         "name": "VSOutput",
@@ -339,20 +325,6 @@
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 2}
-                            },
-                            {
-                                "name": "model",
-                                "type": {
-                                    "kind": "matrix",
-                                    "rowCount": 4,
-                                    "columnCount": 4,
-                                    "elementType": {
-                                        "kind": "scalar",
-                                        "scalarType": "float32"
-                                    }
-                                },
-                                "stage": "fragment",
-                                "binding": {"kind": "varyingInput", "index": 3, "count": 4}
                             }
                         ]
                     }

@@ -1,8 +1,6 @@
 package demo
 
 import re ".."
-import "../lib/ktx"
-import "../lib/obj"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
@@ -10,8 +8,7 @@ import "core:image"
 import "core:image/png"
 import "core:log"
 import "core:math/linalg"
-import "core:mem"
-import "core:strings"
+import "core:slice"
 import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -46,10 +43,12 @@ main :: proc() {
 	window_height, window_width := glfw.GetWindowSize(window)
 	re.init(window)
 
-	grass_pixels, grass_width, grass_height := load_tile_img()
-	grass_tex := re.texture_load(grass_pixels, grass_width, grass_height)
-	hw := f32(grass_width / 2)
-	hh := f32(grass_height / 2)
+	grass_img := load_tile_img()
+	defer image.destroy(grass_img)
+	grass_pixels := slice.reinterpret([]re.Color, grass_img.pixels.buf[:])
+	grass_tex := re.texture_load(grass_pixels, grass_img.width, grass_img.height)
+	hw := f32(grass_img.width / 2)
+	hh := f32(grass_img.height / 2)
 	vertices := []re.Vertex {
 		{pos = {-hw, hh, 0}, uv = {0, 0}},
 		{pos = {hw, hh, 0}, uv = {1, 0}},
@@ -127,14 +126,9 @@ scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 
 GRASS_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0000.png")
 
-load_tile_img :: proc() -> ([]re.Color, int, int) {
-	b := GRASS_TILE_BYTES
+load_tile_img :: proc() -> ^image.Image {
 	img, err := png.load_from_bytes(GRASS_TILE_BYTES)
 	assert(err == nil, fmt.tprintf("failed to load grass, err=%v", err))
 	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
-	// TODO: expand support
-	defer image.destroy(img)
-
-	pixels := transmute([]re.Color)img.pixels.buf[:]
-	return pixels, img.width, img.height
+	return img
 }
