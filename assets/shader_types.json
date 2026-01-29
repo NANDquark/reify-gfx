@@ -99,28 +99,16 @@
                             "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
                         },
                         {
-                            "name": "light_pos",
-                            "type": {
-                                "kind": "vector",
-                                "elementCount": 4,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
-                            },
-                            "binding": {"kind": "uniform", "offset": 128, "size": 16, "elementStride": 4}
-                        },
-                        {
                             "name": "instances",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 10240,
+                                "elementCount": 1280,
                                 "elementType": {
                                     "kind": "struct",
                                     "name": "Instance_Data",
                                     "fields": [
                                         {
-                                            "name": "transform",
+                                            "name": "model",
                                             "type": {
                                                 "kind": "matrix",
                                                 "rowCount": 4,
@@ -157,7 +145,7 @@
                                 },
                                 "uniformStride": 80
                             },
-                            "binding": {"kind": "uniform", "offset": 144, "size": 819200, "elementStride": 80}
+                            "binding": {"kind": "uniform", "offset": 128, "size": 102400, "elementStride": 80}
                         }
                     ]
                 }
@@ -172,7 +160,7 @@
                 {
                     "name": "input",
                     "stage": "vertex",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 3},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 2},
                     "type": {
                         "kind": "struct",
                         "name": "Vertex",
@@ -191,19 +179,6 @@
                                 "binding": {"kind": "varyingInput", "index": 0}
                             },
                             {
-                                "name": "normal",
-                                "type": {
-                                    "kind": "vector",
-                                    "elementCount": 3,
-                                    "elementType": {
-                                        "kind": "scalar",
-                                        "scalarType": "float32"
-                                    }
-                                },
-                                "stage": "vertex",
-                                "binding": {"kind": "varyingInput", "index": 1}
-                            },
-                            {
                                 "name": "uv",
                                 "type": {
                                     "kind": "vector",
@@ -214,13 +189,13 @@
                                     }
                                 },
                                 "stage": "vertex",
-                                "binding": {"kind": "varyingInput", "index": 2}
+                                "binding": {"kind": "varyingInput", "index": 1}
                             }
                         ]
                     }
                 },
                 {
-                    "name": "instanceIndex",
+                    "name": "instance_index",
                     "semanticName": "SV_VULKANINSTANCEID",
                     "type": {
                         "kind": "scalar",
@@ -230,13 +205,13 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 6},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 7},
                 "type": {
                     "kind": "struct",
                     "name": "VSOutput",
                     "fields": [
                         {
-                            "name": "Pos",
+                            "name": "pos",
                             "type": {
                                 "kind": "vector",
                                 "elementCount": 4,
@@ -248,20 +223,7 @@
                             "semanticName": "SV_POSITION"
                         },
                         {
-                            "name": "Normal",
-                            "type": {
-                                "kind": "vector",
-                                "elementCount": 3,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
-                            },
-                            "stage": "vertex",
-                            "binding": {"kind": "varyingOutput", "index": 0}
-                        },
-                        {
-                            "name": "UV",
+                            "name": "uv",
                             "type": {
                                 "kind": "vector",
                                 "elementCount": 2,
@@ -271,51 +233,39 @@
                                 }
                             },
                             "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 0}
+                        },
+                        {
+                            "name": "instance_index",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 1}
                         },
                         {
-                            "name": "LightVec",
+                            "name": "texture_index",
                             "type": {
-                                "kind": "vector",
-                                "elementCount": 3,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
+                                "kind": "scalar",
+                                "scalarType": "uint32"
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 2}
                         },
                         {
-                            "name": "ViewVec",
+                            "name": "model",
                             "type": {
-                                "kind": "vector",
-                                "elementCount": 3,
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
                                 }
                             },
                             "stage": "vertex",
-                            "binding": {"kind": "varyingOutput", "index": 3}
-                        },
-                        {
-                            "name": "InstanceIndex",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "uint32"
-                            },
-                            "stage": "vertex",
-                            "binding": {"kind": "varyingOutput", "index": 4}
-                        },
-                        {
-                            "name": "TextureIndex",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "uint32"
-                            },
-                            "stage": "vertex",
-                            "binding": {"kind": "varyingOutput", "index": 5}
+                            "binding": {"kind": "varyingOutput", "index": 3, "count": 4}
                         }
                     ]
                 }
@@ -342,13 +292,13 @@
                 {
                     "name": "input",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 6},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 7},
                     "type": {
                         "kind": "struct",
                         "name": "VSOutput",
                         "fields": [
                             {
-                                "name": "Pos",
+                                "name": "pos",
                                 "type": {
                                     "kind": "vector",
                                     "elementCount": 4,
@@ -360,20 +310,7 @@
                                 "semanticName": "SV_POSITION"
                             },
                             {
-                                "name": "Normal",
-                                "type": {
-                                    "kind": "vector",
-                                    "elementCount": 3,
-                                    "elementType": {
-                                        "kind": "scalar",
-                                        "scalarType": "float32"
-                                    }
-                                },
-                                "stage": "fragment",
-                                "binding": {"kind": "varyingInput", "index": 0}
-                            },
-                            {
-                                "name": "UV",
+                                "name": "uv",
                                 "type": {
                                     "kind": "vector",
                                     "elementCount": 2,
@@ -383,51 +320,39 @@
                                     }
                                 },
                                 "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 0}
+                            },
+                            {
+                                "name": "instance_index",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 1}
                             },
                             {
-                                "name": "LightVec",
+                                "name": "texture_index",
                                 "type": {
-                                    "kind": "vector",
-                                    "elementCount": 3,
-                                    "elementType": {
-                                        "kind": "scalar",
-                                        "scalarType": "float32"
-                                    }
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 2}
                             },
                             {
-                                "name": "ViewVec",
+                                "name": "model",
                                 "type": {
-                                    "kind": "vector",
-                                    "elementCount": 3,
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
                                     }
                                 },
                                 "stage": "fragment",
-                                "binding": {"kind": "varyingInput", "index": 3}
-                            },
-                            {
-                                "name": "InstanceIndex",
-                                "type": {
-                                    "kind": "scalar",
-                                    "scalarType": "uint32"
-                                },
-                                "stage": "fragment",
-                                "binding": {"kind": "varyingInput", "index": 4}
-                            },
-                            {
-                                "name": "TextureIndex",
-                                "type": {
-                                    "kind": "scalar",
-                                    "scalarType": "uint32"
-                                },
-                                "stage": "fragment",
-                                "binding": {"kind": "varyingInput", "index": 5}
+                                "binding": {"kind": "varyingInput", "index": 3, "count": 4}
                             }
                         ]
                     }

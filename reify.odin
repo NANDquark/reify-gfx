@@ -313,13 +313,7 @@ init :: proc(window: glfw.WindowHandle) {
 	}
 	vertex_attributes := []vk.VertexInputAttributeDescription {
 		{location = 0, binding = 0, format = .R32G32B32_SFLOAT},
-		{
-			location = 1,
-			binding = 0,
-			format = .R32G32B32_SFLOAT,
-			offset = u32(offset_of(Vertex, normal)),
-		},
-		{location = 2, binding = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, uv))},
+		{location = 1, binding = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, uv))},
 	}
 	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
 		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -403,7 +397,7 @@ init :: proc(window: glfw.WindowHandle) {
 	vk_chk(vk.CreateGraphicsPipelines(device.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
 }
 
-start :: proc(projection: Mat4f, view: Mat4f, light_pos: [4]f32) -> ^Frame_Context {
+start :: proc(projection: Mat4f, view: Mat4f) -> ^Frame_Context {
 	frame_index = (frame_index + 1) % MAX_FRAME_IN_FLIGHT
 
 	fctx := &frame_contexts[frame_index]
@@ -413,7 +407,6 @@ start :: proc(projection: Mat4f, view: Mat4f, light_pos: [4]f32) -> ^Frame_Conte
 
 	shader_data.projection = projection
 	shader_data.view = view
-	shader_data.light_pos = light_pos
 
 	return fctx
 }
@@ -435,6 +428,14 @@ present :: proc(fctx: ^Frame_Context) {
 	)
 
 	// Store updated shader data
+	instance_offset := 0
+	for mh, mesh_instances in fctx.draw_meshes {
+		// copy all the meshes of a specific type as a contiguous block so we
+		// can draw indexed
+		for instance, i in mesh_instances {
+			shader_data.instances[instance_offset + i] = instance
+		}
+	}
 	mem.copy(fctx.shader_data_buffer.mapped, &shader_data, size_of(Shader_Data))
 	vma.flush_allocation(device.allocator, fctx.shader_data_buffer.alloc, 0, size_of(Shader_Data))
 
@@ -519,18 +520,29 @@ present :: proc(fctx: ^Frame_Context) {
 	vk.CmdBindPipeline(cb, .GRAPHICS, pipeline)
 	vk.CmdBindDescriptorSets(cb, .GRAPHICS, pipeline_layout, 0, 1, &tex_desc_set, 0, nil)
 
-	index_offset := 0
+	next_instance_index := 0
 	for mh, mesh_instances in fctx.draw_meshes {
+		first_instance_index := next_instance_index
+
 		// copy all the meshes of a specific type as a contiguous block so we
 		// can draw indexed
 		for instance, i in mesh_instances {
-			shader_data.instances[index_offset + i] = instance
+			shader_data.instances[first_instance_index + i] = instance
 		}
-		index_offset += len(mesh_instances)
+		next_instance_index += len(mesh_instances)
+
+		// TEMP SCRATCH
+		// model := shader_data.instances[0].model
+		// view := shader_data.view
+		// projection := shader_data.projection
+		// mvp := projection * view * model
+		// v1 := [4]f32{-8, -8, 0, 1}
+		// pos := mvp * v1
 
 		m := meshes[mh.idx]
 		vk.CmdBindVertexBuffers(cb, 0, 1, &mesh_buffer, &m.vertex_offset)
-		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT32)
+		vk.CmdBindIndexBuffer(cb, mesh_buffer, m.index_offset, .UINT16)
+		sd := &shader_data
 		push_constants := Push_Constants {
 			shader_data = fctx.shader_data_buffer.device_addr,
 		}
@@ -546,9 +558,9 @@ present :: proc(fctx: ^Frame_Context) {
 			cb,
 			u32(m.index_count),
 			u32(len(mesh_instances)),
-			u32(index_offset),
 			0,
 			0,
+			u32(first_instance_index),
 		)
 	}
 
@@ -931,12 +943,12 @@ Mesh_Handle :: struct {
 	idx: int,
 }
 
-load_mesh :: proc(vertices: []Vertex, indices: []u32) -> Mesh_Handle {
+mesh_load :: proc(vertices: []Vertex, indices: []u16) -> Mesh_Handle {
 	@(static) buffer_offset: uintptr = 0
 	MESH_ALIGNMENT :: 16
 
 	v_bytes := len(vertices) * size_of(Vertex)
-	i_bytes := len(indices) * size_of(u32)
+	i_bytes := len(indices) * size_of(u16)
 	v_offset := mem.align_forward_uintptr(buffer_offset, MESH_ALIGNMENT)
 	i_offset := mem.align_forward_uintptr(v_offset + uintptr(v_bytes), MESH_ALIGNMENT)
 	end_offset := i_offset + uintptr(i_bytes)
@@ -988,7 +1000,7 @@ draw_mesh :: proc(fctx: ^Frame_Context, m: Mesh_Handle, t: Texture_Handle, trans
 		fctx.draw_meshes[m] = [dynamic]Instance_Data{}
 		mesh_instances = &fctx.draw_meshes[m]
 	}
-	append(mesh_instances, Instance_Data{transform = transform, texture_index = u32(t.idx)})
+	append(mesh_instances, Instance_Data{model = transform, texture_index = u32(t.idx)})
 }
 
 Texture :: struct {
@@ -1002,20 +1014,14 @@ Texture_Handle :: struct {
 	idx: int,
 }
 
-// Convert the raw_img into a texture and load it onto the GPU
-texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
-	// TODO: convert this from KTX to something more generic & reasonable
-	// TODO: batch up texture transfers for performance
+Color :: [4]u8
+
+texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 	if len(textures) == TEX_DESCRIPTOR_POOL_COUNT {
 		panic("maximum 1024 textures reached")
 	}
 
-	tex := texture_create(
-		ktx.Texture_GetVkFormat(raw_img),
-		raw_img.baseWidth,
-		raw_img.baseHeight,
-		raw_img.numLevels,
-	)
+	tex := texture_create(vk.Format.R8G8B8A8_SRGB, u32(width), u32(height), 1)
 	idx := len(textures)
 	append(&textures, tex)
 
@@ -1023,8 +1029,9 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 	tex_staging_buffer_ptr: rawptr
 	a := tex_staging_alloc
 	vk_chk(vma.map_memory(device.allocator, tex_staging_alloc, &tex_staging_buffer_ptr))
-	mem.copy(tex_staging_buffer_ptr, raw_img.pData, int(raw_img.dataSize))
-	vma.flush_allocation(device.allocator, tex_staging_alloc, 0, vk.DeviceSize(raw_img.dataSize))
+	data_size := len(pixels) * size_of(Color)
+	mem.copy(tex_staging_buffer_ptr, raw_data(pixels), data_size)
+	vma.flush_allocation(device.allocator, tex_staging_alloc, 0, vk.DeviceSize(data_size))
 
 	one_time_cb := vk_one_time_cmd_buffer_begin()
 	{
@@ -1043,7 +1050,7 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 				image = tex.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
-					levelCount = raw_img.numLevels,
+					levelCount = 1,
 					layerCount = 1,
 				},
 			},
@@ -1051,15 +1058,22 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 		vk.CmdPipelineBarrier2(one_time_cb.cmd, &staging_to_gpu_barrier)
 
 		// Tell GPU to move the bytes from staging to GPU
-		copy_regions := calculate_mip_regions(raw_img)
-		defer delete(copy_regions)
+		img_buffer_img_copy := vk.BufferImageCopy {
+			bufferOffset = vk.DeviceSize(0),
+			imageSubresource = vk.ImageSubresourceLayers {
+				aspectMask = {.COLOR},
+				mipLevel = 0,
+				layerCount = 1,
+			},
+			imageExtent = vk.Extent3D{width = u32(width), height = u32(height), depth = 1},
+		}
 		vk.CmdCopyBufferToImage(
 			one_time_cb.cmd,
 			tex_staging_buffer,
 			tex.image,
 			.TRANSFER_DST_OPTIMAL,
-			u32(len(copy_regions)),
-			raw_data(copy_regions),
+			1,
+			&img_buffer_img_copy,
 		)
 
 		// Tell GPU to optimize the data and make it available to the fragment
@@ -1078,7 +1092,7 @@ texture_load :: proc(raw_img: ^ktx.Texture) -> Texture_Handle {
 				image = tex.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
-					levelCount = raw_img.numLevels,
+					levelCount = 1,
 					layerCount = 1,
 				},
 			},
@@ -1146,34 +1160,4 @@ texture_create :: proc(format: vk.Format, width, height, mipLevels: u32) -> Text
 	}
 	vk_chk(vk.CreateImageView(device.handle, &tex_view_create_info, nil, &tex.view))
 	return tex
-}
-
-// TODO: create versions of this for other image types which calculate the mip (LOD)
-// image levels at call time.
-calculate_mip_regions :: proc(img: ^ktx.Texture) -> []vk.BufferImageCopy {
-	copy_regions := [dynamic]vk.BufferImageCopy{}
-	for j in 0 ..< img.numLevels {
-		mip_offset: c.size_t = 0
-		ret := ktx.Texture_GetImageOffset(img, j, 0, 0, &mip_offset)
-		if ret != .SUCCESS {
-			panic("failed to get texture image offset")
-		}
-		append(
-			&copy_regions,
-			vk.BufferImageCopy {
-				bufferOffset = vk.DeviceSize(mip_offset),
-				imageSubresource = vk.ImageSubresourceLayers {
-					aspectMask = {.COLOR},
-					mipLevel = u32(j),
-					layerCount = 1,
-				},
-				imageExtent = vk.Extent3D {
-					width = max(1, img.baseWidth >> j),
-					height = max(1, img.baseHeight >> j),
-					depth = 1,
-				},
-			},
-		)
-	}
-	return copy_regions[:]
 }

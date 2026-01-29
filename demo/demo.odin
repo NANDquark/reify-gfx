@@ -6,8 +6,11 @@ import "../lib/obj"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:image"
+import "core:image/png"
 import "core:log"
 import "core:math/linalg"
+import "core:mem"
 import "core:strings"
 import "core:time"
 import "vendor:glfw"
@@ -43,14 +46,20 @@ main :: proc() {
 	window_height, window_width := glfw.GetWindowSize(window)
 	re.init(window)
 
-	vertices, indices := load_suzanne_model()
-	suzanne_mesh := re.load_mesh(vertices, indices)
-	textures := load_suzanne_textures()
+	grass_pixels, grass_width, grass_height := load_tile_img()
+	grass_tex := re.texture_load(grass_pixels, grass_width, grass_height)
+	hw := f32(grass_width / 2)
+	hh := f32(grass_height / 2)
+	vertices := []re.Vertex {
+		{pos = {-hw, hh, 0}, uv = {0, 0}},
+		{pos = {hw, hh, 0}, uv = {1, 0}},
+		{pos = {hw, -hh, 0}, uv = {1, 1}},
+		{pos = {-hw, -hh, 0}, uv = {0, 1}},
+	}
+	indices := []u16{0, 1, 2, 2, 3, 0}
+	grass_mesh := re.mesh_load(vertices, indices)
 
-
-	cam_pos := [3]f32{0.0, 0.0, -6.0}
-	object_rotations := [3]f32{}
-	light_pos := [4]f32{0, -10, 10, 0}
+	cam_pos := [3]f32{0, 0, 0}
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -61,16 +70,6 @@ main :: proc() {
 		last_frame_time = frame_start_time
 
 		glfw.PollEvents()
-		// Rotate with mouse drag
-		mouse_x, mouse_y := glfw.GetCursorPos(window)
-		mouse_pos := [2]f64{mouse_x, mouse_y}
-		if glfw.GetMouseButton(window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS {
-			delta := last_mouse_pos - mouse_pos
-			sensitivity :: 0.005
-			object_rotations.x += f32(-delta.y) * sensitivity // -y to account for y-axis flip
-			object_rotations.y -= f32(delta.x) * sensitivity
-		}
-		last_mouse_pos = mouse_pos
 		// Zoom with mouse wheel
 		if scroll_offset != {} {
 			cam_pos.z += f32(scroll_offset.y) * 0.025 * dt
@@ -78,26 +77,42 @@ main :: proc() {
 
 		// Update shader data
 		window_ratio := f32(window_width) / f32(window_height)
-		projection := linalg.matrix4_perspective(linalg.PI / 4, window_ratio, 0.1, 32)
+		projection := linalg.matrix_ortho3d(0, f32(window_width), f32(window_height), 0, -1, 1)
+			// odinfmt: disable
+		correction := re.Mat4f{
+			1, 0, 0, 0,
+			0, 1, 0, 0,
+			0, 0, 0.5, 0.5,
+			0, 0, 0, 1,
+		}
+		projection = correction * projection
+		// odinfmt: enable
+		// projection := matrix_ortho_vk(0, f32(window_width), f32(window_height), 0, 0, 100)
 		view := linalg.matrix4_translate(cam_pos)
-		rotation_quat := linalg.quaternion_from_euler_angles(
-			object_rotations.x,
-			object_rotations.y,
-			object_rotations.z,
-			.XYZ,
-		)
 
 		// Draw!
-		fctx := re.start(projection, view, light_pos)
-		for i in 0 ..< 3 {
-			instance_pos := [3]f32{f32(i - 1) * 2, 0, 0}
-			rotation_mat := linalg.matrix4_from_quaternion(rotation_quat)
-			translation_mat := linalg.matrix4_translate(instance_pos)
-			transform := translation_mat * rotation_mat
-			re.draw_mesh(fctx, suzanne_mesh, textures[i], transform)
-		}
+		fctx := re.start(projection, view)
+		instance_pos := [3]f32{f32(window_width) / 2, f32(window_height) / 2, 0}
+		// instance_pos := [3]f32{}
+		transform := linalg.matrix4_translate(instance_pos)
+		re.draw_mesh(fctx, grass_mesh, grass_tex, transform)
 		re.present(fctx)
 	}
+}
+
+matrix_ortho_vk :: proc(
+	left, right, bottom, top, near, far: f32,
+) -> (
+	m: re.Mat4f,
+) #no_bounds_check {
+	m[0, 0] = +2 / (right - left)
+	m[1, 1] = +2 / (top - bottom)
+	m[2, 2] = +2 / (far - near)
+	m[0, 3] = -(right + left) / (right - left)
+	m[1, 3] = -(top + bottom) / (top - bottom)
+	m[2, 3] = -near / (far - near)
+	m[3, 3] = 1
+	return
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
@@ -110,55 +125,16 @@ scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	scroll_offset = [2]f64{x_offset, y_offset}
 }
 
-load_suzanne_model :: proc() -> ([]re.Vertex, []u32) {
-	suzanne_obj, ok := obj.load_obj_file_from_file("./assets/suzanne.obj")
-	if !ok {
-		panic("failed to load suzanne.obj asset")
-	}
-	vertices := [dynamic]re.Vertex{}
-	indices := [dynamic]u32{}
-	for o in suzanne_obj.objects {
-		for g in o.groups {
-			for f in g.face_element {
-				for i in 0 ..< 3 {
-					// TODO this could be improved by de-duplicating and re-using existing vertex indices
-					p_ind := f.position[i] - 1
-					p := g.vertex_position[p_ind]
-					n_ind := f.normal[i] - 1
-					n := g.vertex_normal[n_ind]
-					uv_ind := f.uv[i] - 1
-					uv := g.vertex_uv[uv_ind]
-					v := re.Vertex {
-						pos    = p.xyz,
-						normal = n.xyz,
-						uv     = uv.xy,
-					}
-					append(&vertices, v)
-					append(&indices, u32(len(indices)))
-				}
-			}
-		}
-	}
-	return vertices[:], indices[:]
-}
+GRASS_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0000.png")
 
-load_suzanne_textures :: proc() -> []re.Texture_Handle {
-	textures: [dynamic]re.Texture_Handle
-	for i in 0 ..< 3 {
-		ktx_texture: ^ktx.Texture
-		filename := fmt.tprintf("assets/suzanne%d.ktx", i)
-		cfilename := strings.clone_to_cstring(filename, context.temp_allocator)
-		err := ktx.Texture_CreateFromNamedFile(
-			cfilename,
-			{.TEXTURE_CREATE_LOAD_IMAGE_DATA},
-			&ktx_texture,
-		)
-		if err != .SUCCESS {
-			panic(fmt.tprintf("failed to load ktx image '%s', err=%v", filename, err))
-		}
-		tex := re.texture_load(ktx_texture)
-		append(&textures, tex)
-		ktx.Texture_Destroy(ktx_texture)
-	}
-	return textures[:]
+load_tile_img :: proc() -> ([]re.Color, int, int) {
+	b := GRASS_TILE_BYTES
+	img, err := png.load_from_bytes(GRASS_TILE_BYTES)
+	assert(err == nil, fmt.tprintf("failed to load grass, err=%v", err))
+	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
+	// TODO: expand support
+	defer image.destroy(img)
+
+	pixels := transmute([]re.Color)img.pixels.buf[:]
+	return pixels, img.width, img.height
 }

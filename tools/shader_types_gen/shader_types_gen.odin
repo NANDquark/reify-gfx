@@ -39,9 +39,9 @@ run :: proc() -> Error {
 	sb: strings.Builder
 	strings.builder_init(&sb)
 	fmt.sbprintln(&sb, "package reify\n")
-	fmt.sbprintfln(&sb, "// Generated: %v\n", time.now())
-	fmt.sbprintln(&sb, "import vk \"vendor:vulkan\"\n")
+	fmt.sbprintfln(&sb, "// Generated: %v", time.now())
 	fmt.sbprintln(&sb, "// TODO: automatic padding based on slang offsets & sizes!\n")
+	fmt.sbprintln(&sb, "import vk \"vendor:vulkan\"\n")
 
 	for name in TARGET_NAMES {
 		value, found := json_search_by_name(root, name)
@@ -126,10 +126,12 @@ Shader_Vector :: struct {
 
 Scalar_Type :: distinct string
 Scalar_Type_UINT32: Scalar_Type : "uint32"
+Scalar_Type_UINT64: Scalar_Type : "uint64"
 Scalar_Type_FLOAT32: Scalar_Type : "float32"
 
 SCALAR_TO_ODIN := map[Scalar_Type]string {
 	Scalar_Type_UINT32  = "u32",
+	Scalar_Type_UINT64  = "u64",
 	Scalar_Type_FLOAT32 = "f32",
 }
 

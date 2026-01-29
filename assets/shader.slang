@@ -5,25 +5,23 @@
 
 struct Vertex {
   float3 pos;
-  float3 normal;
   float2 uv;
 };
 
 Sampler2D textures[];
 
-const static uint MAX_INSTANCES = 10 * 1024;
-// const static uint MAX_INSTANCES = 3;
+const static uint MAX_INSTANCES = 10 * 128;
 
 struct Instance_Data {
-  float4x4 transform;
+  column_major float4x4 model; // aka the transform
   uint32_t texture_index;
+  // color/tint?
   uint32_t _pad0[3];
 };
 
 struct Shader_Data {
-  float4x4 projection;
-  float4x4 view;
-  float4 light_pos;
+  column_major float4x4 projection;
+  column_major float4x4 view;
   Instance_Data instances[MAX_INSTANCES];
 };
 
@@ -32,54 +30,45 @@ struct Push_Constants {
 };
 
 struct VSOutput {
-  float4 Pos : SV_POSITION;
-  float3 Normal;
-  float2 UV;
-  float3 LightVec;
-  float3 ViewVec;
-  uint32_t InstanceIndex;
-  uint32_t TextureIndex;
+  float4 pos : SV_POSITION;
+  float2 uv;
+  uint32_t instance_index;
+  uint32_t texture_index;
+  float4x4 model;
 };
 
 [[vk::push_constant]]
 Push_Constants pc;
 
-// Reflection anchor: never bound, never accessed
+// Reflection anchor used only to expose Shader_Data in shader_types.json
 StructuredBuffer<Shader_Data> _ReflectionAnchor;
 
 [shader("vertex")]
-VSOutput vertMain(Vertex input, uint instanceIndex: SV_VulkanInstanceID) {
+VSOutput vertMain(Vertex input, uint instance_index: SV_VulkanInstanceID) {
   VSOutput output;
-  Instance_Data instance = pc.shader_data->instances[instanceIndex];
-  output.Normal = mul((float3x3)mul(pc.shader_data->view, instance.transform),
-                      input.normal);
-  output.UV = input.uv;
-  output.Pos = mul(pc.shader_data->projection,
-                   mul(pc.shader_data->view,
-                       mul(instance.transform, float4(input.pos.xyz, 1.0))));
-  output.InstanceIndex = instanceIndex;
-
-  // Calculate view vectors required for lighting
-  float4 fragPos = mul(mul(pc.shader_data->view, instance.transform),
-                       float4(input.pos.xyz, 1.0));
-  output.LightVec = pc.shader_data->light_pos.xyz - fragPos.xyz;
-  output.ViewVec = -fragPos.xyz;
-  output.TextureIndex = instance.texture_index;
+  Instance_Data instance = pc.shader_data->instances[instance_index];
+  output.uv = input.uv;
+  // output.pos = mul(pc.shader_data->projection,
+  //                  mul(pc.shader_data->view,
+  //                      mul(instance.model, float4(input.pos.xyz, 1.0))));
+  // float4 debug = float4(input.pos.x / 100.0, input.pos.y / 100, 0, 1);
+  // float4x4 mvp = pc.shader_data.projection;
+  float4x4 scale = float4x4(10, 0, 0, 0, 0, 10, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  float4x4 mvp = mul(pc.shader_data.projection, mul(instance.model, scale));
+  output.model = instance.model;
+  output.pos = mul(mvp, float4(input.pos.xyz, 1.0));
+  // output.pos.x = debug.x;
+  // output.pos.y = debug.y;
+  // output.pos.z = debug.z;
+  // output.pos.w = 1;
+  output.instance_index = instance_index;
+  output.texture_index = instance.texture_index;
   return output;
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput input) {
-  // Phong lighting
-  float3 N = normalize(input.Normal);
-  float3 L = normalize(input.LightVec);
-  float3 V = normalize(input.ViewVec);
-  float3 R = reflect(-L, N);
-  float3 diffuse = max(dot(N, L), 0.0025);
-  float3 specular = pow(max(dot(R, V), 0.0), 16.0) * 0.75;
-  // Sample from texture
-  float3 color = textures[input.TextureIndex].Sample(input.UV).rgb;
-  // float3 color = textures[pc.texture_index].Sample(input.UV).rgb *
-  // input.Factor;
-  return float4(diffuse * color.rgb + specular, 1.0);
-}
+// float4 fragMain(VSOutput input) {
+//   float3 color = textures[input.texture_index].Sample(input.uv).rgb;
+//   return float4(color.rgb, 1.0);
+// }
+float4 fragMain(VSOutput input) { return float4(1.0, 0.0, 0.0, 1.0); }
