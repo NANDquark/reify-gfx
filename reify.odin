@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:mem"
-import "lib/ktx"
 import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -22,7 +21,7 @@ Device_Context :: struct {
 	queue_family: u32,
 	allocator:    vma.Allocator,
 }
-device: Device_Context
+dctx: Device_Context
 
 surface: vk.SurfaceKHR
 
@@ -75,13 +74,13 @@ window_width, window_height: c.int
 init :: proc(window: glfw.WindowHandle) {
 	defer free_all(context.temp_allocator)
 
-	device_context_init(&device)
+	device_context_init(&dctx)
 
 	// SETUP SURFACE
-	vk_chk(glfw.CreateWindowSurface(device.instance, window, nil, &surface))
+	vk_chk(glfw.CreateWindowSurface(dctx.instance, window, nil, &surface))
 	window_width, window_height = glfw.GetWindowSize(window)
 	surface_caps: vk.SurfaceCapabilitiesKHR
-	vk_chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(device.physical, surface, &surface_caps))
+	vk_chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(dctx.physical, surface, &surface_caps))
 	swapchain_context_init(&swapchain, surface, surface_caps)
 
 	// Setup Mesh Buffer
@@ -96,7 +95,7 @@ init :: proc(window: glfw.WindowHandle) {
 	}
 	vk_chk(
 		vma.create_buffer(
-			device.allocator,
+			dctx.allocator,
 			buffer_create_info,
 			buffer_alloc_create_info,
 			&mesh_buffer,
@@ -105,26 +104,6 @@ init :: proc(window: glfw.WindowHandle) {
 		),
 	)
 
-	// Setup texture staging buffer
-	tex_staging_buffer_create_info := vk.BufferCreateInfo {
-		sType = .BUFFER_CREATE_INFO,
-		size  = vk.DeviceSize(TEX_STAGING_BUFFER_SIZE),
-		usage = {.TRANSFER_SRC},
-	}
-	tex_staging_alloc_create_info := vma.Allocation_Create_Info {
-		flags = {.Host_Access_Sequential_Write, .Mapped},
-		usage = .Auto,
-	}
-	vk_chk(
-		vma.create_buffer(
-			device.allocator,
-			tex_staging_buffer_create_info,
-			tex_staging_alloc_create_info,
-			&tex_staging_buffer,
-			&tex_staging_alloc,
-			nil,
-		),
-	)
 
 	// Init global sampler
 	sampler_create_info := vk.SamplerCreateInfo {
@@ -136,11 +115,9 @@ init :: proc(window: glfw.WindowHandle) {
 		maxAnisotropy    = 8, // widely used
 		maxLod           = vk.LOD_CLAMP_NONE,
 	}
-	vk_chk(vk.CreateSampler(device.handle, &sampler_create_info, nil, &tex_sampler))
+	vk_chk(vk.CreateSampler(dctx.handle, &sampler_create_info, nil, &tex_sampler))
 
 	// CPU & GPU Sync
-	// TODO: separate this somewhere with some abstraction around creating a uniform
-	// buffer then later referencing and using it from `frame` via some kind of handle
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		u_buffer_create_info := vk.BufferCreateInfo {
 			sType = .BUFFER_CREATE_INFO,
@@ -153,7 +130,7 @@ init :: proc(window: glfw.WindowHandle) {
 		}
 		vk_chk(
 			vma.create_buffer(
-				device.allocator,
+				dctx.allocator,
 				u_buffer_create_info,
 				u_buffer_alloc_create_info,
 				&frame_contexts[i].shader_data_buffer.buffer,
@@ -163,7 +140,7 @@ init :: proc(window: glfw.WindowHandle) {
 		)
 		vk_chk(
 			vma.map_memory(
-				device.allocator,
+				dctx.allocator,
 				frame_contexts[i].shader_data_buffer.alloc,
 				&frame_contexts[i].shader_data_buffer.mapped,
 			),
@@ -173,7 +150,7 @@ init :: proc(window: glfw.WindowHandle) {
 			buffer = frame_contexts[i].shader_data_buffer.buffer,
 		}
 		frame_contexts[i].shader_data_buffer.device_addr = vk.GetBufferDeviceAddress(
-			device.handle,
+			dctx.handle,
 			&u_buffer_bda_info,
 		)
 	}
@@ -186,10 +163,10 @@ init :: proc(window: glfw.WindowHandle) {
 		flags = {.SIGNALED},
 	}
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
-		vk_chk(vk.CreateFence(device.handle, &fence_create_info, nil, &frame_contexts[i].fence))
+		vk_chk(vk.CreateFence(dctx.handle, &fence_create_info, nil, &frame_contexts[i].fence))
 		vk_chk(
 			vk.CreateSemaphore(
-				device.handle,
+				dctx.handle,
 				&semaphore_create_info,
 				nil,
 				&frame_contexts[i].present_semaphore,
@@ -197,28 +174,28 @@ init :: proc(window: glfw.WindowHandle) {
 		)
 	}
 	for &s in swapchain.render_semaphores {
-		vk_chk(vk.CreateSemaphore(device.handle, &semaphore_create_info, nil, &s))
+		vk_chk(vk.CreateSemaphore(dctx.handle, &semaphore_create_info, nil, &s))
 	}
 
 	// COMMAND BUFFERS
 	command_pool_create_info := vk.CommandPoolCreateInfo {
 		sType            = .COMMAND_POOL_CREATE_INFO,
 		flags            = {.RESET_COMMAND_BUFFER},
-		queueFamilyIndex = device.queue_family,
+		queueFamilyIndex = dctx.queue_family,
 	}
-	vk_chk(vk.CreateCommandPool(device.handle, &command_pool_create_info, nil, &command_pool))
+	vk_chk(vk.CreateCommandPool(dctx.handle, &command_pool_create_info, nil, &command_pool))
 	command_buffer_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
 		commandBufferCount = 1,
 	}
 	// TODO: This is awkward because by keeping command buffer in the Frame_Context
-	// we cannot allocator an array of command buffers so we do it as two separate
+	// we cannot allocate an array of command buffers so we do it as two separate
 	// allocations
 	for &fctx in frame_contexts {
 		vk_chk(
 			vk.AllocateCommandBuffers(
-				device.handle,
+				dctx.handle,
 				&command_buffer_alloc_info,
 				&fctx.command_buffer,
 			),
@@ -226,6 +203,25 @@ init :: proc(window: glfw.WindowHandle) {
 	}
 
 	// Textures globals
+	tex_staging_buffer_create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = vk.DeviceSize(TEX_STAGING_BUFFER_SIZE),
+		usage = {.TRANSFER_SRC},
+	}
+	tex_staging_alloc_create_info := vma.Allocation_Create_Info {
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+		usage = .Auto,
+	}
+	vk_chk(
+		vma.create_buffer(
+			dctx.allocator,
+			tex_staging_buffer_create_info,
+			tex_staging_alloc_create_info,
+			&tex_staging_buffer,
+			&tex_staging_alloc,
+			nil,
+		),
+	)
 	tex_desc_var_flags := vk.DescriptorBindingFlags{.VARIABLE_DESCRIPTOR_COUNT}
 	tex_desc_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -245,7 +241,7 @@ init :: proc(window: glfw.WindowHandle) {
 	}
 	vk_chk(
 		vk.CreateDescriptorSetLayout(
-			device.handle,
+			dctx.handle,
 			&tex_desc_layout_create_info,
 			nil,
 			&tex_desc_set_layout,
@@ -261,7 +257,7 @@ init :: proc(window: glfw.WindowHandle) {
 		poolSizeCount = 1,
 		pPoolSizes    = &tex_pool_size,
 	}
-	vk_chk(vk.CreateDescriptorPool(device.handle, &tex_desc_pool_create_info, nil, &tex_desc_pool))
+	vk_chk(vk.CreateDescriptorPool(dctx.handle, &tex_desc_pool_create_info, nil, &tex_desc_pool))
 	tex_desc_pool_count := u32(TEX_DESCRIPTOR_POOL_COUNT)
 	tex_desc_set_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
 		sType              = .DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
@@ -275,130 +271,18 @@ init :: proc(window: glfw.WindowHandle) {
 		descriptorSetCount = 1,
 		pSetLayouts        = &tex_desc_set_layout,
 	}
-	vk_chk(vk.AllocateDescriptorSets(device.handle, &tex_desc_set_alloc, &tex_desc_set))
+	vk_chk(vk.AllocateDescriptorSets(dctx.handle, &tex_desc_set_alloc, &tex_desc_set))
 
-	// LOADING SHADERS
-	// TODO: extract loading a shader and creating a pipeline into its own thing
-	shader_module_create_info := vk.ShaderModuleCreateInfo {
-		sType    = .SHADER_MODULE_CREATE_INFO,
-		codeSize = len(SHADER_BYTES),
-		pCode    = cast(^u32)raw_data(SHADER_BYTES),
-	}
-	vk_chk(vk.CreateShaderModule(device.handle, &shader_module_create_info, nil, &shader_module))
-
-	// GRAPHICS PIPELINE
-	push_constant_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX, .FRAGMENT},
-		size       = size_of(Push_Constants),
-	}
-	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
-		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount         = 1,
-		pSetLayouts            = &tex_desc_set_layout,
-		pushConstantRangeCount = 1,
-		pPushConstantRanges    = &push_constant_range,
-	}
-	vk_chk(
-		vk.CreatePipelineLayout(
-			device.handle,
-			&pipeline_layout_create_info,
-			nil,
-			&pipeline_layout,
-		),
+	vk_shader_module_init(dctx, &shader_module, SHADER_BYTES)
+	vk_pipeline_init(
+		dctx,
+		Push_Constants,
+		Vertex,
+		&tex_desc_set_layout,
+		shader_module,
+		&pipeline_layout,
+		&pipeline,
 	)
-	vertex_binding := vk.VertexInputBindingDescription {
-		binding   = 0,
-		stride    = size_of(Vertex),
-		inputRate = .VERTEX,
-	}
-	vertex_attributes := []vk.VertexInputAttributeDescription {
-		{location = 0, binding = 0, format = .R32G32B32_SFLOAT},
-		{location = 1, binding = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, uv))},
-	}
-	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
-		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		vertexBindingDescriptionCount   = 1,
-		pVertexBindingDescriptions      = &vertex_binding,
-		vertexAttributeDescriptionCount = u32(len(vertex_attributes)),
-		pVertexAttributeDescriptions    = raw_data(vertex_attributes),
-	}
-	input_assembly_state := vk.PipelineInputAssemblyStateCreateInfo {
-		sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology = .TRIANGLE_LIST,
-	}
-	shader_stages := []vk.PipelineShaderStageCreateInfo {
-		{
-			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage = {.VERTEX},
-			module = shader_module,
-			pName = "vertMain",
-		},
-		{
-			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage = {.FRAGMENT},
-			module = shader_module,
-			pName = "fragMain",
-		},
-	}
-	viewport_state := vk.PipelineViewportStateCreateInfo {
-		sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-		viewportCount = 1,
-		scissorCount  = 1,
-	}
-	dynamic_states := []vk.DynamicState{.VIEWPORT, .SCISSOR}
-	dynamic_state := vk.PipelineDynamicStateCreateInfo {
-		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		dynamicStateCount = u32(len(dynamic_states)),
-		pDynamicStates    = raw_data(dynamic_states),
-	}
-	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
-		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		depthTestEnable  = true,
-		depthWriteEnable = true,
-		depthCompareOp   = .LESS_OR_EQUAL,
-	}
-	rendering_create_info := vk.PipelineRenderingCreateInfo {
-		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
-		colorAttachmentCount    = 1,
-		pColorAttachmentFormats = &IMAGE_FORMAT,
-		depthAttachmentFormat   = swapchain.depth_create_info.format,
-	}
-	blend_attachment := vk.PipelineColorBlendAttachmentState {
-		colorWriteMask      = {.R, .G, .B, .A},
-		blendEnable         = true,
-		srcColorBlendFactor = .SRC_ALPHA,
-		dstColorBlendFactor = .ONE_MINUS_SRC_COLOR,
-		colorBlendOp        = .ADD,
-	}
-	color_blend_state := vk.PipelineColorBlendStateCreateInfo {
-		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		attachmentCount = 1,
-		pAttachments    = &blend_attachment,
-	}
-	rasterization_state := vk.PipelineRasterizationStateCreateInfo {
-		sType     = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		lineWidth = 1,
-	}
-	multisample_state := vk.PipelineMultisampleStateCreateInfo {
-		sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		rasterizationSamples = {._1},
-	}
-	pipeline_create_info := vk.GraphicsPipelineCreateInfo {
-		sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
-		pNext               = &rendering_create_info,
-		stageCount          = u32(len(shader_stages)),
-		pStages             = raw_data(shader_stages),
-		pVertexInputState   = &vertex_input_state,
-		pInputAssemblyState = &input_assembly_state,
-		pViewportState      = &viewport_state,
-		pRasterizationState = &rasterization_state,
-		pMultisampleState   = &multisample_state,
-		pDepthStencilState  = &depth_stencil_state,
-		pColorBlendState    = &color_blend_state,
-		pDynamicState       = &dynamic_state,
-		layout              = pipeline_layout,
-	}
-	vk_chk(vk.CreateGraphicsPipelines(device.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
 }
 
 start :: proc(projection: Mat4f, view: Mat4f) -> ^Frame_Context {
@@ -416,13 +300,13 @@ start :: proc(projection: Mat4f, view: Mat4f) -> ^Frame_Context {
 }
 
 present :: proc(fctx: ^Frame_Context) {
-	vk_chk(vk.WaitForFences(device.handle, 1, &fctx.fence, true, max(u64)))
-	vk_chk(vk.ResetFences(device.handle, 1, &fctx.fence))
+	vk_chk(vk.WaitForFences(dctx.handle, 1, &fctx.fence, true, max(u64)))
+	vk_chk(vk.ResetFences(dctx.handle, 1, &fctx.fence))
 	// Next image
 	image_index: u32
 	vk_chk_swapchain(
 		vk.AcquireNextImageKHR(
-			device.handle,
+			dctx.handle,
 			swapchain.handle,
 			max(u64),
 			fctx.present_semaphore,
@@ -441,7 +325,7 @@ present :: proc(fctx: ^Frame_Context) {
 		}
 	}
 	mem.copy(fctx.shader_data_buffer.mapped, &shader_data, size_of(Shader_Data))
-	vma.flush_allocation(device.allocator, fctx.shader_data_buffer.alloc, 0, size_of(Shader_Data))
+	vma.flush_allocation(dctx.allocator, fctx.shader_data_buffer.alloc, 0, size_of(Shader_Data))
 
 	// Record command buffer
 	cb := fctx.command_buffer
@@ -585,7 +469,7 @@ present :: proc(fctx: ^Frame_Context) {
 		signalSemaphoreCount = 1,
 		pSignalSemaphores    = &swapchain.render_semaphores[image_index],
 	}
-	vk_chk(vk.QueueSubmit(device.queue, 1, &submit_info, fctx.fence))
+	vk_chk(vk.QueueSubmit(dctx.queue, 1, &submit_info, fctx.fence))
 	// present
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
@@ -595,27 +479,27 @@ present :: proc(fctx: ^Frame_Context) {
 		pSwapchains        = &swapchain.handle,
 		pImageIndices      = &image_index,
 	}
-	vk_chk_swapchain(vk.QueuePresentKHR(device.queue, &present_info))
+	vk_chk_swapchain(vk.QueuePresentKHR(dctx.queue, &present_info))
 
 	// window resize or something like that
 	if swapchain.needs_update {
-		vk.DeviceWaitIdle(device.handle)
+		vk.DeviceWaitIdle(dctx.handle)
 		surface_caps: vk.SurfaceCapabilitiesKHR
-		vk_chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(device.physical, surface, &surface_caps))
+		vk_chk(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(dctx.physical, surface, &surface_caps))
 		swapchain_context_init(&swapchain, surface, surface_caps, recreate = true)
 	}
 }
 
 cleanup :: proc() {
-	vk_chk(vk.DeviceWaitIdle(device.handle))
+	vk_chk(vk.DeviceWaitIdle(dctx.handle))
 
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		fctx := frame_contexts[i]
-		vk.DestroyFence(device.handle, fctx.fence, nil)
-		vk.DestroySemaphore(device.handle, fctx.present_semaphore, nil)
-		vma.unmap_memory(device.allocator, fctx.shader_data_buffer.alloc)
+		vk.DestroyFence(dctx.handle, fctx.fence, nil)
+		vk.DestroySemaphore(dctx.handle, fctx.present_semaphore, nil)
+		vma.unmap_memory(dctx.allocator, fctx.shader_data_buffer.alloc)
 		vma.destroy_buffer(
-			device.allocator,
+			dctx.allocator,
 			fctx.shader_data_buffer.buffer,
 			fctx.shader_data_buffer.alloc,
 		)
@@ -623,26 +507,26 @@ cleanup :: proc() {
 
 	swapchain_context_destroy(&swapchain)
 
-	vma.destroy_buffer(device.allocator, mesh_buffer, mesh_alloc)
+	vma.destroy_buffer(dctx.allocator, mesh_buffer, mesh_alloc)
 
 	for t in textures {
-		vk.DestroyImageView(device.handle, t.view, nil)
-		vma.destroy_image(device.allocator, t.image, t.alloc)
+		vk.DestroyImageView(dctx.handle, t.view, nil)
+		vma.destroy_image(dctx.allocator, t.image, t.alloc)
 		// t.sampler is shared in tex_sampler
 	}
-	vk.DestroySampler(device.handle, tex_sampler, nil)
-	vk.DestroyDescriptorSetLayout(device.handle, tex_desc_set_layout, nil)
-	vk.DestroyDescriptorPool(device.handle, tex_desc_pool, nil)
-	vma.destroy_buffer(device.allocator, tex_staging_buffer, tex_staging_alloc)
+	vk.DestroySampler(dctx.handle, tex_sampler, nil)
+	vk.DestroyDescriptorSetLayout(dctx.handle, tex_desc_set_layout, nil)
+	vk.DestroyDescriptorPool(dctx.handle, tex_desc_pool, nil)
+	vma.destroy_buffer(dctx.allocator, tex_staging_buffer, tex_staging_alloc)
 
-	vk.DestroyPipelineLayout(device.handle, pipeline_layout, nil)
-	vk.DestroyPipeline(device.handle, pipeline, nil)
-	vk.DestroyCommandPool(device.handle, command_pool, nil)
-	vk.DestroyShaderModule(device.handle, shader_module, nil)
+	vk.DestroyPipelineLayout(dctx.handle, pipeline_layout, nil)
+	vk.DestroyPipeline(dctx.handle, pipeline, nil)
+	vk.DestroyCommandPool(dctx.handle, command_pool, nil)
+	vk.DestroyShaderModule(dctx.handle, shader_module, nil)
 
-	vk.DestroySurfaceKHR(device.instance, surface, nil)
+	vk.DestroySurfaceKHR(dctx.instance, surface, nil)
 
-	context_destroy(&device)
+	context_destroy(&dctx)
 }
 
 Shader_Data_Buffer :: struct {
@@ -670,10 +554,10 @@ swapchain_context_init :: proc(
 ) {
 	if recreate {
 		for swi in sc.views {
-			vk.DestroyImageView(device.handle, swi, nil)
+			vk.DestroyImageView(dctx.handle, swi, nil)
 		}
-		vma.destroy_image(device.allocator, sc.depth_image, sc.depth_alloc)
-		vk.DestroyImageView(device.handle, sc.depth_view, nil)
+		vma.destroy_image(dctx.allocator, sc.depth_image, sc.depth_alloc)
+		vk.DestroyImageView(dctx.handle, sc.depth_view, nil)
 	}
 
 	sc.create_info = vk.SwapchainCreateInfoKHR {
@@ -691,15 +575,15 @@ swapchain_context_init :: proc(
 		presentMode = .FIFO,
 		oldSwapchain = sc.handle if recreate else {},
 	}
-	vk_chk(vk.CreateSwapchainKHR(device.handle, &sc.create_info, nil, &sc.handle))
+	vk_chk(vk.CreateSwapchainKHR(dctx.handle, &sc.create_info, nil, &sc.handle))
 
 
 	swapchain_image_count: u32
-	vk_chk(vk.GetSwapchainImagesKHR(device.handle, sc.handle, &swapchain_image_count, nil))
+	vk_chk(vk.GetSwapchainImagesKHR(dctx.handle, sc.handle, &swapchain_image_count, nil))
 	resize(&sc.images, swapchain_image_count)
 	vk_chk(
 		vk.GetSwapchainImagesKHR(
-			device.handle,
+			dctx.handle,
 			sc.handle,
 			&swapchain_image_count,
 			raw_data(sc.images),
@@ -714,12 +598,12 @@ swapchain_context_init :: proc(
 			format = IMAGE_FORMAT,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		vk_chk(vk.CreateImageView(device.handle, &view_create_info, nil, &sc.views[i]))
+		vk_chk(vk.CreateImageView(dctx.handle, &view_create_info, nil, &sc.views[i]))
 	}
 
 	if recreate {
 		// must be destroyed after the new swapchain is created w/ the oldSwapchain passed in so the drivers can be clever and reuse internal resources to reduce the cost of a new swapchain
-		vk.DestroySwapchainKHR(device.handle, sc.create_info.oldSwapchain, nil)
+		vk.DestroySwapchainKHR(dctx.handle, sc.create_info.oldSwapchain, nil)
 	}
 
 	depth_format_list := [2]vk.Format{.D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT}
@@ -727,7 +611,7 @@ swapchain_context_init :: proc(
 		format_properties := vk.FormatProperties2 {
 			sType = .FORMAT_PROPERTIES_2,
 		}
-		vk.GetPhysicalDeviceFormatProperties2(device.physical, format, &format_properties)
+		vk.GetPhysicalDeviceFormatProperties2(dctx.physical, format, &format_properties)
 		if .DEPTH_STENCIL_ATTACHMENT in format_properties.formatProperties.optimalTilingFeatures {
 			sc.depth_create_info.format = format
 			break
@@ -751,7 +635,7 @@ swapchain_context_init :: proc(
 	}
 	vk_chk(
 		vma.create_image(
-			device.allocator,
+			dctx.allocator,
 			sc.depth_create_info,
 			alloc_create_info,
 			&sc.depth_image,
@@ -770,19 +654,19 @@ swapchain_context_init :: proc(
 			layerCount = 1,
 		},
 	}
-	vk_chk(vk.CreateImageView(device.handle, &depth_view_create_info, nil, &sc.depth_view))
+	vk_chk(vk.CreateImageView(dctx.handle, &depth_view_create_info, nil, &sc.depth_view))
 }
 
 swapchain_context_destroy :: proc(sc: ^Swapchain_Context) {
-	vma.destroy_image(device.allocator, sc.depth_image, sc.depth_alloc)
-	vk.DestroyImageView(device.handle, sc.depth_view, nil)
+	vma.destroy_image(dctx.allocator, sc.depth_image, sc.depth_alloc)
+	vk.DestroyImageView(dctx.handle, sc.depth_view, nil)
 	for iv in sc.views {
-		vk.DestroyImageView(device.handle, iv, nil)
+		vk.DestroyImageView(dctx.handle, iv, nil)
 	}
 	for s in sc.render_semaphores {
-		vk.DestroySemaphore(device.handle, s, nil)
+		vk.DestroySemaphore(dctx.handle, s, nil)
 	}
-	vk.DestroySwapchainKHR(device.handle, sc.handle, nil)
+	vk.DestroySwapchainKHR(dctx.handle, sc.handle, nil)
 }
 
 device_context_init :: proc(dctx: ^Device_Context) {
@@ -948,7 +832,7 @@ mesh_load :: proc(vertices: []Vertex, indices: []u16) -> Mesh_Handle {
 	}
 
 	base_ptr: rawptr
-	vk_chk(vma.map_memory(device.allocator, mesh_alloc, &base_ptr))
+	vk_chk(vma.map_memory(dctx.allocator, mesh_alloc, &base_ptr))
 
 	// copy vertices
 	v_write_ptr := rawptr(uintptr(base_ptr) + v_offset)
@@ -960,12 +844,12 @@ mesh_load :: proc(vertices: []Vertex, indices: []u16) -> Mesh_Handle {
 
 	// cleanup
 	vma.flush_allocation(
-		device.allocator,
+		dctx.allocator,
 		mesh_alloc,
 		vk.DeviceSize(v_offset),
 		vk.DeviceSize(end_offset - v_offset),
 	)
-	vma.unmap_memory(device.allocator, mesh_alloc)
+	vma.unmap_memory(dctx.allocator, mesh_alloc)
 	buffer_offset = end_offset
 
 	handle := Mesh_Handle {
@@ -1018,12 +902,12 @@ texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 	// copy image to the staging buffer
 	tex_staging_buffer_ptr: rawptr
 	a := tex_staging_alloc
-	vk_chk(vma.map_memory(device.allocator, tex_staging_alloc, &tex_staging_buffer_ptr))
+	vk_chk(vma.map_memory(dctx.allocator, tex_staging_alloc, &tex_staging_buffer_ptr))
 	data_size := len(pixels) * size_of(Color)
 	mem.copy(tex_staging_buffer_ptr, raw_data(pixels), data_size)
-	vma.flush_allocation(device.allocator, tex_staging_alloc, 0, vk.DeviceSize(data_size))
+	vma.flush_allocation(dctx.allocator, tex_staging_alloc, 0, vk.DeviceSize(data_size))
 
-	one_time_cb := vk_one_time_cmd_buffer_begin()
+	one_time_cb := vk_one_time_cmd_buffer_begin(dctx)
 	{
 		// transfer from the staging buffer to the GPU
 		staging_to_gpu_barrier := vk.DependencyInfo {
@@ -1089,7 +973,7 @@ texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 		}
 		vk.CmdPipelineBarrier2(one_time_cb.cmd, &gpu_to_frag_barrier)
 	}
-	vk_one_time_cmd_buffer_end(&one_time_cb)
+	vk_one_time_cmd_buffer_end(dctx, &one_time_cb)
 
 	// Append the texture descriptor to the descriptor set and upload that
 	// to the GPU so it's available to the shaders
@@ -1106,8 +990,8 @@ texture_load :: proc(pixels: []Color, width, height: int) -> Texture_Handle {
 			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		},
 	}
-	vk.UpdateDescriptorSets(device.handle, 1, &write_desc_set, 0, nil)
-	vk_chk(vk.QueueWaitIdle(device.queue))
+	vk.UpdateDescriptorSets(dctx.handle, 1, &write_desc_set, 0, nil)
+	vk_chk(vk.QueueWaitIdle(dctx.queue))
 
 	return Texture_Handle{idx = idx}
 }
@@ -1130,7 +1014,7 @@ texture_create :: proc(format: vk.Format, width, height, mipLevels: u32) -> Text
 	}
 	vk_chk(
 		vma.create_image(
-			device.allocator,
+			dctx.allocator,
 			tex_img_create_info,
 			{usage = .Auto},
 			&tex.image,
@@ -1149,6 +1033,6 @@ texture_create :: proc(format: vk.Format, width, height, mipLevels: u32) -> Text
 			layerCount = 1,
 		},
 	}
-	vk_chk(vk.CreateImageView(device.handle, &tex_view_create_info, nil, &tex.view))
+	vk_chk(vk.CreateImageView(dctx.handle, &tex_view_create_info, nil, &tex.view))
 	return tex
 }

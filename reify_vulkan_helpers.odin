@@ -5,6 +5,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:reflect"
 import "lib/vma"
 import vk "vendor:vulkan"
 
@@ -101,20 +102,20 @@ One_Time_Command_Buffer :: struct {
 	cmd:   vk.CommandBuffer,
 }
 
-vk_one_time_cmd_buffer_begin :: proc() -> One_Time_Command_Buffer {
+vk_one_time_cmd_buffer_begin :: proc(dctx: Device_Context) -> One_Time_Command_Buffer {
 	ctx: One_Time_Command_Buffer
 
 	fence_one_time_create_info := vk.FenceCreateInfo {
 		sType = .FENCE_CREATE_INFO,
 	}
-	vk_chk(vk.CreateFence(device.handle, &fence_one_time_create_info, nil, &ctx.fence))
+	vk_chk(vk.CreateFence(dctx.handle, &fence_one_time_create_info, nil, &ctx.fence))
 	cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
 		commandBufferCount = 1,
 	}
 
-	vk_chk(vk.AllocateCommandBuffers(device.handle, &cb_one_time_alloc_info, &ctx.cmd))
+	vk_chk(vk.AllocateCommandBuffers(dctx.handle, &cb_one_time_alloc_info, &ctx.cmd))
 	cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
@@ -125,7 +126,7 @@ vk_one_time_cmd_buffer_begin :: proc() -> One_Time_Command_Buffer {
 	return ctx
 }
 
-vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Command_Buffer) {
+vk_one_time_cmd_buffer_end :: proc(dctx: Device_Context, ctx: ^One_Time_Command_Buffer) {
 	vk_chk(vk.EndCommandBuffer(ctx.cmd))
 
 	submit_info := vk.SubmitInfo {
@@ -133,10 +134,260 @@ vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Command_Buffer) {
 		commandBufferCount = 1,
 		pCommandBuffers    = &ctx.cmd,
 	}
-	vk_chk(vk.QueueSubmit(device.queue, 1, &submit_info, ctx.fence))
-	vk_chk(vk.WaitForFences(device.handle, 1, &ctx.fence, true, max(u64)))
+	vk_chk(vk.QueueSubmit(dctx.queue, 1, &submit_info, ctx.fence))
+	vk_chk(vk.WaitForFences(dctx.handle, 1, &ctx.fence, true, max(u64)))
 
-	vk.DestroyFence(device.handle, ctx.fence, nil)
-	vma.unmap_memory(device.allocator, tex_staging_alloc)
-	vk.FreeCommandBuffers(device.handle, command_pool, 1, &ctx.cmd)
+	vk.DestroyFence(dctx.handle, ctx.fence, nil)
+	vma.unmap_memory(dctx.allocator, tex_staging_alloc)
+	vk.FreeCommandBuffers(dctx.handle, command_pool, 1, &ctx.cmd)
+}
+
+vk_shader_module_init :: proc(
+	dctx: Device_Context,
+	shader_module: ^vk.ShaderModule,
+	shader_bytes: []byte,
+) {
+	shader_module_create_info := vk.ShaderModuleCreateInfo {
+		sType    = .SHADER_MODULE_CREATE_INFO,
+		codeSize = len(shader_bytes),
+		pCode    = cast(^u32)raw_data(shader_bytes),
+	}
+	vk_chk(vk.CreateShaderModule(dctx.handle, &shader_module_create_info, nil, shader_module))
+}
+
+vk_pipeline_init :: proc(
+	dctx: Device_Context,
+	$Push_Constants_Type: typeid,
+	$Vertex_Type: typeid,
+	desc_set_layout: ^vk.DescriptorSetLayout,
+	shader_module: vk.ShaderModule,
+	out_pipeline_layout: ^vk.PipelineLayout,
+	out_pipeline: ^vk.Pipeline,
+) {
+	push_constant_range := vk.PushConstantRange {
+		stageFlags = {.VERTEX, .FRAGMENT},
+		size       = size_of(Push_Constants_Type),
+	}
+	pipeline_layout_create_info := vk.PipelineLayoutCreateInfo {
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = 1,
+		pSetLayouts            = desc_set_layout,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &push_constant_range,
+	}
+	vk_chk(
+		vk.CreatePipelineLayout(
+			dctx.handle,
+			&pipeline_layout_create_info,
+			nil,
+			out_pipeline_layout,
+		),
+	)
+	vertex_binding := vk.VertexInputBindingDescription {
+		binding   = 0,
+		stride    = size_of(Vertex_Type),
+		inputRate = .VERTEX,
+	}
+	vertex_attributes := get_vertex_attributes(Vertex_Type)
+	defer delete(vertex_attributes)
+	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
+		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		vertexBindingDescriptionCount   = 1,
+		pVertexBindingDescriptions      = &vertex_binding,
+		vertexAttributeDescriptionCount = u32(len(vertex_attributes)),
+		pVertexAttributeDescriptions    = raw_data(vertex_attributes),
+	}
+	input_assembly_state := vk.PipelineInputAssemblyStateCreateInfo {
+		sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		topology = .TRIANGLE_LIST,
+	}
+	shader_stages := []vk.PipelineShaderStageCreateInfo {
+		{
+			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+			stage = {.VERTEX},
+			module = shader_module,
+			pName = "vertMain",
+		},
+		{
+			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+			stage = {.FRAGMENT},
+			module = shader_module,
+			pName = "fragMain",
+		},
+	}
+	viewport_state := vk.PipelineViewportStateCreateInfo {
+		sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		viewportCount = 1,
+		scissorCount  = 1,
+	}
+	dynamic_states := []vk.DynamicState{.VIEWPORT, .SCISSOR}
+	dynamic_state := vk.PipelineDynamicStateCreateInfo {
+		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		dynamicStateCount = u32(len(dynamic_states)),
+		pDynamicStates    = raw_data(dynamic_states),
+	}
+	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
+		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		depthTestEnable  = true,
+		depthWriteEnable = true,
+		depthCompareOp   = .LESS_OR_EQUAL,
+	}
+	rendering_create_info := vk.PipelineRenderingCreateInfo {
+		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
+		colorAttachmentCount    = 1,
+		pColorAttachmentFormats = &IMAGE_FORMAT,
+		depthAttachmentFormat   = swapchain.depth_create_info.format,
+	}
+	blend_attachment := vk.PipelineColorBlendAttachmentState {
+		colorWriteMask      = {.R, .G, .B, .A},
+		blendEnable         = true,
+		srcColorBlendFactor = .SRC_ALPHA,
+		dstColorBlendFactor = .ONE_MINUS_SRC_COLOR,
+		colorBlendOp        = .ADD,
+	}
+	color_blend_state := vk.PipelineColorBlendStateCreateInfo {
+		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		attachmentCount = 1,
+		pAttachments    = &blend_attachment,
+	}
+	rasterization_state := vk.PipelineRasterizationStateCreateInfo {
+		sType     = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		lineWidth = 1,
+	}
+	multisample_state := vk.PipelineMultisampleStateCreateInfo {
+		sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		rasterizationSamples = {._1},
+	}
+	pipeline_create_info := vk.GraphicsPipelineCreateInfo {
+		sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+		pNext               = &rendering_create_info,
+		stageCount          = u32(len(shader_stages)),
+		pStages             = raw_data(shader_stages),
+		pVertexInputState   = &vertex_input_state,
+		pInputAssemblyState = &input_assembly_state,
+		pViewportState      = &viewport_state,
+		pRasterizationState = &rasterization_state,
+		pMultisampleState   = &multisample_state,
+		pDepthStencilState  = &depth_stencil_state,
+		pColorBlendState    = &color_blend_state,
+		pDynamicState       = &dynamic_state,
+		layout              = out_pipeline_layout^,
+	}
+	vk_chk(vk.CreateGraphicsPipelines(dctx.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
+}
+
+@(private = "file")
+get_vertex_attributes :: proc($T: typeid) -> []vk.VertexInputAttributeDescription {
+	info := reflect.type_info_base(type_info_of(T))
+	struct_info, ok := info.variant.(reflect.Type_Info_Struct)
+	if !ok {
+		panic("must only supply structs")
+	}
+	attribs := make([]vk.VertexInputAttributeDescription, struct_info.field_count)
+
+	for i in 0 ..< struct_info.field_count {
+		offset := struct_info.offsets[i]
+		ti := struct_info.types[i]
+
+		attribs[i] = vk.VertexInputAttributeDescription {
+			location = u32(i),
+			binding  = 0,
+			format   = type_to_vk_format(ti),
+			offset   = u32(offset),
+		}
+	}
+	return attribs
+}
+
+@(private = "file")
+type_to_vk_format :: proc(info: ^reflect.Type_Info) -> vk.Format {
+	#partial switch variant in info.variant {
+	case reflect.Type_Info_Array:
+		if variant.elem.id == f32 {
+			switch variant.count {
+			case 2:
+				return .R32G32_SFLOAT
+			case 3:
+				return .R32G32B32_SFLOAT
+			case 4:
+				return .R32G32B32A32_SFLOAT
+			}
+		}
+		if variant.elem.id == f64 {
+			switch variant.count {
+			case 2:
+				return .R64G64_SFLOAT
+			case 3:
+				return .R64G64B64_SFLOAT
+			case 4:
+				return .R64G64B64A64_SFLOAT
+			}
+		}
+		if variant.elem.id == u32 {
+			switch variant.count {
+			case 2:
+				return .R32G32_UINT
+			case 3:
+				return .R32G32B32_UINT
+			case 4:
+				return .R32G32B32A32_UINT
+			}
+		}
+		if variant.elem.id == u64 {
+			switch variant.count {
+			case 2:
+				return .R64G64_UINT
+			case 3:
+				return .R64G64B64_UINT
+			case 4:
+				return .R64G64B64A64_UINT
+			}
+		}
+		if variant.elem.id == i32 {
+			switch variant.count {
+			case 2:
+				return .R32G32_SINT
+			case 3:
+				return .R32G32B32_SINT
+			case 4:
+				return .R32G32B32A32_SINT
+			}
+		}
+		if variant.elem.id == i64 {
+			switch variant.count {
+			case 2:
+				return .R64G64_SINT
+			case 3:
+				return .R64G64B64_SINT
+			case 4:
+				return .R64G64B64A64_SINT
+			}
+		}
+	case reflect.Type_Info_Integer:
+		if variant.signed {
+			switch info.size {
+			case 4:
+				return .R32_SINT
+			case 8:
+				return .R64_SINT
+			}
+		} else {
+			switch info.size {
+			case 4:
+				return .R32_UINT
+			case 8:
+				return .R64_UINT
+			}
+		}
+	case reflect.Type_Info_Float:
+		switch info.size {
+		case 4:
+			return .R32_SFLOAT
+		case 8:
+			return .R64_SFLOAT
+		}
+	case:
+		panic("unimplemented type conversion in Vertex")
+	}
+	return .UNDEFINED
 }
