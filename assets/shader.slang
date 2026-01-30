@@ -47,18 +47,9 @@ VSOutput vertMain(Vertex input, uint instance_index: SV_VulkanInstanceID) {
   VSOutput output;
   Instance_Data instance = pc.shader_data->instances[instance_index];
   output.uv = input.uv;
-  // output.pos = mul(pc.shader_data->projection,
-  //                  mul(pc.shader_data->view,
-  //                      mul(instance.model, float4(input.pos.xyz, 1.0))));
-  // float4 debug = float4(input.pos.x / 100.0, input.pos.y / 100, 0, 1);
-  // float4x4 mvp = pc.shader_data.projection;
   float4x4 mvp =
       mul(pc.shader_data.projection, mul(pc.shader_data.view, instance.model));
   output.pos = mul(mvp, float4(input.pos.xyz, 1.0));
-  // output.pos.x = debug.x;
-  // output.pos.y = debug.y;
-  // output.pos.z = debug.z;
-  // output.pos.w = 1;
   output.instance_index = instance_index;
   output.texture_index = instance.texture_index;
   return output;

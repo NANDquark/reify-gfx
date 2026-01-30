@@ -22,7 +22,7 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 
 	// SETUP WINDOW
-	glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11)
+	glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11) // RenderDoc can only handle X11
 	if !bool(glfw.Init()) {
 		panic("failed to initialize GLFW")
 	}
@@ -40,7 +40,7 @@ main :: proc() {
 	}
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
-	window_height, window_width := glfw.GetWindowSize(window)
+	window_width, window_height := glfw.GetWindowSize(window)
 	re.init(window)
 
 	grass_img := load_tile_img()
@@ -76,7 +76,7 @@ main :: proc() {
 
 		// Update shader data
 		window_ratio := f32(window_width) / f32(window_height)
-		projection := linalg.matrix_ortho3d(0, f32(window_width), f32(window_height), 0, -1, 1)
+		projection := linalg.matrix_ortho3d(0, f32(window_width), 0, f32(window_height), -1, 1)
 			// odinfmt: disable
 		correction := re.Mat4f{
 			1, 0, 0, 0,
