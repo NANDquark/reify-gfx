@@ -86,13 +86,11 @@ main :: proc() {
 		}
 		projection = correction * projection
 		// odinfmt: enable
-		// projection := matrix_ortho_vk(0, f32(window_width), f32(window_height), 0, 0, 100)
 		view := linalg.matrix4_translate(cam_pos)
 
 		// Draw!
 		fctx := re.start(projection, view)
 		instance_pos := [3]f32{f32(window_width) / 2, f32(window_height) / 2, 0}
-		// instance_pos := [3]f32{}
 		transform := linalg.matrix4_translate(instance_pos)
 		re.draw_mesh(fctx, grass_mesh, grass_tex, transform)
 		re.present(fctx)
@@ -124,7 +122,7 @@ scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	scroll_offset = [2]f64{x_offset, y_offset}
 }
 
-GRASS_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0000.png")
+GRASS_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0003.png")
 
 load_tile_img :: proc() -> ^image.Image {
 	img, err := png.load_from_bytes(GRASS_TILE_BYTES)

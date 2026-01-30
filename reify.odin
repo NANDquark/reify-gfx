@@ -364,7 +364,11 @@ init :: proc(window: glfw.WindowHandle) {
 		depthAttachmentFormat   = swapchain.depth_create_info.format,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
-		colorWriteMask = {.R, .G, .B, .A},
+		colorWriteMask      = {.R, .G, .B, .A},
+		blendEnable         = true,
+		srcColorBlendFactor = .SRC_ALPHA,
+		dstColorBlendFactor = .ONE_MINUS_SRC_COLOR,
+		colorBlendOp        = .ADD,
 	}
 	color_blend_state := vk.PipelineColorBlendStateCreateInfo {
 		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,

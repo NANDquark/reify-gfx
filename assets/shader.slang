@@ -57,7 +57,5 @@ VSOutput vertMain(Vertex input, uint instance_index: SV_VulkanInstanceID) {
 
 [shader("fragment")]
 float4 fragMain(VSOutput input) {
-  float3 color = textures[input.texture_index].Sample(input.uv).rgb;
-  return float4(color.rgb, 1.0);
+  return textures[input.texture_index].Sample(input.uv);
 }
-// float4 fragMain(VSOutput input) { return float4(1.0, 0.0, 0.0, 1.0); }
