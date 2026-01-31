@@ -4,26 +4,26 @@ package reify
 import "base:runtime"
 import "core:fmt"
 import "core:mem"
-import "core:os"
 import "core:reflect"
-import "lib/vma"
 import vk "vendor:vulkan"
 
 // Assert that the vulkan result is success
-vk_chk :: proc(res: vk.Result, loc := #caller_location) {
-	if res != .SUCCESS do panic(fmt.tprintf("chk failed: %v, loc=%v,%v", res, loc.file_path, loc.line))
+vk_assert :: proc(res: vk.Result, loc := #caller_location) {
+	if res != .SUCCESS {
+		panic(fmt.tprintf("vk_chk failed: %v, loc=%v,%v", res, loc.file_path, loc.line))
+	}
 }
 
-// Assert that the vulkan result is success, with some special handling for swapchain
-vk_chk_swapchain :: proc(result: vk.Result) {
-	if result < .SUCCESS {
-		if result == .ERROR_OUT_OF_DATE_KHR {
-			swapchain.needs_update = true
-			return
-		}
-		fmt.printf("Vulkan call returned an error (%v)\n", result)
-		os.exit(int(result))
-	}
+Chk_Swapchain_Result :: enum {
+	Success,
+	Swapchain_Must_Update,
+}
+
+// Check whether the vulkan result is success, with some special handling for swapchain
+vk_chk_swapchain :: proc(result: vk.Result, loc := #caller_location) -> Chk_Swapchain_Result {
+	if result == .ERROR_OUT_OF_DATE_KHR do return .Swapchain_Must_Update
+	if result >= .SUCCESS do return .Success
+	panic(fmt.tprintf("vk_chk_swapchain failed: %v, loc=%v,%v\n", result, loc.file_path, loc.line))
 }
 
 // Iterate the physical graphics devices and select the best one for usage
@@ -97,53 +97,63 @@ vk_check_ext_supported :: proc(phys_device: vk.PhysicalDevice, target_ext_name: 
 	return false
 }
 
-One_Time_Command_Buffer :: struct {
-	fence: vk.Fence,
-	cmd:   vk.CommandBuffer,
+One_Time_Cmd_Buffer :: struct {
+	device:       vk.Device,
+	queue:        vk.Queue,
+	command_pool: vk.CommandPool,
+	fence:        vk.Fence,
+	cmd:          vk.CommandBuffer,
 }
 
-vk_one_time_cmd_buffer_begin :: proc(dctx: Device_Context) -> One_Time_Command_Buffer {
-	ctx: One_Time_Command_Buffer
+vk_one_time_cmd_buffer_begin :: proc(
+	device: vk.Device,
+	queue: vk.Queue,
+	command_pool: vk.CommandPool,
+) -> One_Time_Cmd_Buffer {
+	ctx := One_Time_Cmd_Buffer {
+		device       = device,
+		queue        = queue,
+		command_pool = command_pool,
+	}
 
 	fence_one_time_create_info := vk.FenceCreateInfo {
 		sType = .FENCE_CREATE_INFO,
 	}
-	vk_chk(vk.CreateFence(dctx.handle, &fence_one_time_create_info, nil, &ctx.fence))
+	vk_assert(vk.CreateFence(ctx.device, &fence_one_time_create_info, nil, &ctx.fence))
 	cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
 		commandBufferCount = 1,
 	}
 
-	vk_chk(vk.AllocateCommandBuffers(dctx.handle, &cb_one_time_alloc_info, &ctx.cmd))
+	vk_assert(vk.AllocateCommandBuffers(ctx.device, &cb_one_time_alloc_info, &ctx.cmd))
 	cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
 	}
 
-	vk_chk(vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info))
+	vk_assert(vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info))
 
 	return ctx
 }
 
-vk_one_time_cmd_buffer_end :: proc(dctx: Device_Context, ctx: ^One_Time_Command_Buffer) {
-	vk_chk(vk.EndCommandBuffer(ctx.cmd))
+vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Cmd_Buffer) {
+	vk_assert(vk.EndCommandBuffer(ctx.cmd))
 
 	submit_info := vk.SubmitInfo {
 		sType              = .SUBMIT_INFO,
 		commandBufferCount = 1,
 		pCommandBuffers    = &ctx.cmd,
 	}
-	vk_chk(vk.QueueSubmit(dctx.queue, 1, &submit_info, ctx.fence))
-	vk_chk(vk.WaitForFences(dctx.handle, 1, &ctx.fence, true, max(u64)))
+	vk_assert(vk.QueueSubmit(ctx.queue, 1, &submit_info, ctx.fence))
+	vk_assert(vk.WaitForFences(ctx.device, 1, &ctx.fence, true, max(u64)))
 
-	vk.DestroyFence(dctx.handle, ctx.fence, nil)
-	vma.unmap_memory(dctx.allocator, tex_staging_alloc)
-	vk.FreeCommandBuffers(dctx.handle, command_pool, 1, &ctx.cmd)
+	vk.DestroyFence(ctx.device, ctx.fence, nil)
+	vk.FreeCommandBuffers(ctx.device, ctx.command_pool, 1, &ctx.cmd)
 }
 
 vk_shader_module_init :: proc(
-	dctx: Device_Context,
+	device: vk.Device,
 	shader_module: ^vk.ShaderModule,
 	shader_bytes: []byte,
 ) {
@@ -152,15 +162,16 @@ vk_shader_module_init :: proc(
 		codeSize = len(shader_bytes),
 		pCode    = cast(^u32)raw_data(shader_bytes),
 	}
-	vk_chk(vk.CreateShaderModule(dctx.handle, &shader_module_create_info, nil, shader_module))
+	vk_assert(vk.CreateShaderModule(device, &shader_module_create_info, nil, shader_module))
 }
 
 vk_pipeline_init :: proc(
-	dctx: Device_Context,
+	device: vk.Device,
 	$Push_Constants_Type: typeid,
 	$Vertex_Type: typeid,
 	desc_set_layout: ^vk.DescriptorSetLayout,
 	shader_module: vk.ShaderModule,
+	depth_format: vk.Format,
 	out_pipeline_layout: ^vk.PipelineLayout,
 	out_pipeline: ^vk.Pipeline,
 ) {
@@ -175,13 +186,8 @@ vk_pipeline_init :: proc(
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
-	vk_chk(
-		vk.CreatePipelineLayout(
-			dctx.handle,
-			&pipeline_layout_create_info,
-			nil,
-			out_pipeline_layout,
-		),
+	vk_assert(
+		vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout),
 	)
 	vertex_binding := vk.VertexInputBindingDescription {
 		binding   = 0,
@@ -236,7 +242,7 @@ vk_pipeline_init :: proc(
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
 		pColorAttachmentFormats = &IMAGE_FORMAT,
-		depthAttachmentFormat   = swapchain.depth_create_info.format,
+		depthAttachmentFormat   = depth_format,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
 		colorWriteMask      = {.R, .G, .B, .A},
@@ -273,7 +279,7 @@ vk_pipeline_init :: proc(
 		pDynamicState       = &dynamic_state,
 		layout              = out_pipeline_layout^,
 	}
-	vk_chk(vk.CreateGraphicsPipelines(dctx.handle, 0, 1, &pipeline_create_info, nil, &pipeline))
+	vk_assert(vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, out_pipeline))
 }
 
 @(private = "file")

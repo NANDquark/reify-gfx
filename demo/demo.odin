@@ -17,6 +17,7 @@ WIDTH :: 800
 HEIGHT :: 600
 
 scroll_offset: [2]f64
+renderer: re.Renderer = {}
 
 main :: proc() {
 	context.logger = log.create_console_logger()
@@ -41,12 +42,12 @@ main :: proc() {
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
 	window_width, window_height := glfw.GetWindowSize(window)
-	re.init(window)
+	re.init(&renderer, window)
 
 	grass_img := load_tile_img()
 	defer image.destroy(grass_img)
 	grass_pixels := slice.reinterpret([]re.Color, grass_img.pixels.buf[:])
-	grass_tex := re.texture_load(grass_pixels, grass_img.width, grass_img.height)
+	grass_tex := re.texture_load(&renderer, grass_pixels, grass_img.width, grass_img.height)
 	hw := f32(grass_img.width / 2)
 	hh := f32(grass_img.height / 2)
 	vertices := []re.Vertex {
@@ -56,7 +57,7 @@ main :: proc() {
 		{pos = {-hw, -hh, 0}, uv = {0, 1}},
 	}
 	indices := []u16{0, 1, 2, 2, 3, 0}
-	grass_mesh := re.mesh_load(vertices, indices)
+	grass_mesh := re.mesh_load(&renderer, vertices, indices)
 
 	cam_pos := [3]f32{0, 0, 0}
 	last_mouse_pos: [2]f64
@@ -75,46 +76,37 @@ main :: proc() {
 		}
 
 		// Update shader data
+		// TODO: move projection inside Renderer
 		window_ratio := f32(window_width) / f32(window_height)
 		projection := linalg.matrix_ortho3d(0, f32(window_width), 0, f32(window_height), -1, 1)
 			// odinfmt: disable
-		correction := re.Mat4f{
-			1, 0, 0, 0,
-			0, 1, 0, 0,
+		vk_correction := re.Mat4f{
+			1, 0, 0,   0,
+			0, 1, 0,   0,
 			0, 0, 0.5, 0.5,
-			0, 0, 0, 1,
+			0, 0, 0,   1,
 		}
-		projection = correction * projection
+		projection = vk_correction * projection
 		// odinfmt: enable
+
+		// TODO: convert into camera movement procs on renderer with cam_pos
+		// stored internally
 		view := linalg.matrix4_translate(cam_pos)
 
 		// Draw!
-		fctx := re.start(projection, view)
+		fctx := re.start(&renderer, projection, view)
 		instance_pos := [3]f32{f32(window_width) / 2, f32(window_height) / 2, 0}
+		// TODO: convert from a raw model matrix to simpler translate/rotate
+		// arguments with the matrix derived within Renderer
 		transform := linalg.matrix4_translate(instance_pos)
-		re.draw_mesh(fctx, grass_mesh, grass_tex, transform)
-		re.present(fctx)
+		re.draw_mesh(&renderer, grass_mesh, grass_tex, transform)
+		re.present(&renderer)
 	}
-}
-
-matrix_ortho_vk :: proc(
-	left, right, bottom, top, near, far: f32,
-) -> (
-	m: re.Mat4f,
-) #no_bounds_check {
-	m[0, 0] = +2 / (right - left)
-	m[1, 1] = +2 / (top - bottom)
-	m[2, 2] = +2 / (far - near)
-	m[0, 3] = -(right + left) / (right - left)
-	m[1, 3] = -(top + bottom) / (top - bottom)
-	m[2, 3] = -near / (far - near)
-	m[3, 3] = 1
-	return
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
 	context = runtime.default_context()
-	re.window_resize(width, height)
+	re.window_resize(&renderer, width, height)
 }
 
 scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
