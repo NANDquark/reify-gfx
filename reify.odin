@@ -114,7 +114,6 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 		),
 	)
 
-
 	// Init global sampler
 	sampler_create_info := vk.SamplerCreateInfo {
 		sType            = .SAMPLER_CREATE_INFO,
@@ -591,8 +590,6 @@ Shader_Data_Buffer :: struct {
 }
 
 Mat4f :: matrix[4, 4]f32
-
-MAX_INSTANCES :: 100
 
 window_resize :: proc(r: ^Renderer, width, height: i32) {
 	r.window.width = width

@@ -47,17 +47,45 @@ run :: proc() -> Error {
 		value, found := json_search_by_name(root, name)
 		if found {
 			st := convert_struct(value)
+
+			// Generate constants for arrays
+			for i in 0 ..< len(st.field_names) {
+				field_name := st.field_names[i]
+				field_type := st.field_types[i]
+				if field_type.kind == .Array {
+					arr := cast(^Shader_Array)field_type
+					if arr.len > 0 {
+						upper_name := strings.to_upper(field_name, context.temp_allocator)
+						fmt.sbprintfln(&sb, "MAX_%s :: %d", upper_name, arr.len)
+					}
+				}
+			}
+
 			fmt.sbprintfln(&sb, "%s :: struct #align (16) {{", name)
 			for i in 0 ..< len(st.field_names) {
 				field_name := st.field_names[i]
 				field_type := st.field_types[i]
-				odin_type := build_odin_type(field_type)
+
+				odin_type: string
+				if field_type.kind == .Array {
+					arr := cast(^Shader_Array)field_type
+					if arr.len > 0 {
+						upper_name := strings.to_upper(field_name, context.temp_allocator)
+						const_name := fmt.tprintf("MAX_%s", upper_name)
+						odin_type = build_odin_type(field_type, const_name)
+					} else {
+						odin_type = build_odin_type(field_type)
+					}
+				} else {
+					odin_type = build_odin_type(field_type)
+				}
+
 				defer delete(odin_type)
 				fmt.sbprintfln(&sb, "    %s: %s,", field_name, odin_type)
 			}
 			fmt.sbprintln(&sb, "}\n")
 		} else {
-			fmt.printfln("'%s' type not found", name)
+			fmt.printfln("%s type not found", name)
 			return .Type_Not_Found
 		}
 	}
@@ -245,14 +273,19 @@ convert_field_type :: proc(type_obj: json.Object) -> ^Shader_Field {
 	return field
 }
 
-build_odin_type :: proc(field_def: ^Shader_Field) -> string {
+build_odin_type :: proc(field_def: ^Shader_Field, length_override: string = "") -> string {
 	sb: strings.Builder
 
 	switch field_def.kind {
 	case .Array:
 		fd := cast(^Shader_Array)field_def
 		element_type := build_odin_type(fd.element_type)
-		fmt.sbprintf(&sb, "[%d]%s", fd.len, element_type)
+		defer delete(element_type)
+		if length_override != "" {
+			fmt.sbprintf(&sb, "[%s]%s", length_override, element_type)
+		} else {
+			fmt.sbprintf(&sb, "[%d]%s", fd.len, element_type)
+		}
 	case .Matrix:
 		fd := cast(^Shader_Matrix)field_def
 		scalar_type := "f" if fd.element_type.type == Scalar_Type_FLOAT32 else "i"
