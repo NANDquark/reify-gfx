@@ -142,6 +142,9 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 		magFilter        = .LINEAR,
 		minFilter        = .LINEAR,
 		mipmapMode       = .LINEAR,
+		addressModeU     = .CLAMP_TO_EDGE,
+		addressModeV     = .CLAMP_TO_EDGE,
+		addressModeW     = .CLAMP_TO_EDGE,
 		anisotropyEnable = true,
 		maxAnisotropy    = 8, // widely used
 		maxLod           = vk.LOD_CLAMP_NONE,
