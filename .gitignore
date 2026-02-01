@@ -3,3 +3,4 @@ debug*
 *.exe
 *.pdb
 reify
+*.cap
