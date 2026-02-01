@@ -4,3 +4,4 @@ debug*
 *.pdb
 reify
 *.cap
+.envrc
