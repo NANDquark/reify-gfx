@@ -48,16 +48,7 @@ main :: proc() {
 	defer image.destroy(grass_img)
 	grass_pixels := slice.reinterpret([]re.Color, grass_img.pixels.buf[:])
 	grass_tex := re.texture_load(&renderer, grass_pixels, grass_img.width, grass_img.height)
-	hw := f32(grass_img.width / 2)
-	hh := f32(grass_img.height / 2)
-	vertices := []re.Vertex {
-		{pos = {-hw, hh, 0}, uv = {0, 0}},
-		{pos = {hw, hh, 0}, uv = {1, 0}},
-		{pos = {hw, -hh, 0}, uv = {1, 1}},
-		{pos = {-hw, -hh, 0}, uv = {0, 1}},
-	}
-	indices := []u16{0, 1, 2, 2, 3, 0}
-	grass_mesh := re.mesh_load(&renderer, vertices, indices)
+	grass_sprite := re.sprite_create(&renderer, grass_tex, 16, 16)
 
 	cam_pos := [3]f32{0, 0, 0}
 	last_mouse_pos: [2]f64
@@ -95,11 +86,8 @@ main :: proc() {
 
 		// Draw!
 		fctx := re.start(&renderer, projection, view)
-		instance_pos := [3]f32{f32(window_width) / 2, f32(window_height) / 2, 0}
-		// TODO: convert from a raw model matrix to simpler translate/rotate
-		// arguments with the matrix derived within Renderer
-		transform := linalg.matrix4_translate(instance_pos)
-		re.draw_mesh(&renderer, grass_mesh, grass_tex, transform)
+		instance_pos := [2]f32{f32(window_width) / 2, f32(window_height) / 2}
+		re.draw_sprite(&renderer, grass_sprite, instance_pos)
 		re.present(&renderer)
 	}
 }

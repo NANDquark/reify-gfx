@@ -7,8 +7,7 @@ import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-SHADER_BYTES :: #load("assets/shader.spv")
-MESH_BUFFER_SIZE :: 10 * mem.Megabyte
+SHADER_BYTES :: #load("assets/sprite.spv")
 MAX_FRAME_IN_FLIGHT :: 3
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
@@ -23,10 +22,10 @@ Renderer :: struct {
 	},
 	swapchain:       Swapchain_Context,
 	resources:       struct {
-		meshes:              [dynamic]Mesh,
 		textures:            [dynamic]Texture,
-		mesh_buffer:         vk.Buffer,
-		mesh_alloc:          vma.Allocation,
+		sprites:             [dynamic]Sprite,
+		index_buffer:        vk.Buffer,
+		index_alloc:         vma.Allocation,
 		tex_staging_buffer:  vk.Buffer,
 		tex_staging_alloc:   vma.Allocation,
 		tex_desc_pool:       vk.DescriptorPool,
@@ -58,20 +57,16 @@ Swapchain_Context :: struct {
 	images:            [dynamic]vk.Image,
 	views:             [dynamic]vk.ImageView,
 	render_semaphores: [dynamic]vk.Semaphore,
-	depth_format:      vk.Format,
-	depth_image:       vk.Image,
-	depth_view:        vk.ImageView,
-	depth_alloc:       vma.Allocation,
 	needs_update:      bool,
 }
 
 Frame_Context :: struct {
 	fence:              vk.Fence,
 	present_semaphore:  vk.Semaphore,
-	shader_data:        Shader_Data,
+	shader_data:        Sprite_Shader_Data,
 	shader_data_buffer: Shader_Data_Buffer,
+	num_sprites:        int,
 	command_buffer:     vk.CommandBuffer,
-	draw_meshes:        map[Mesh_Handle][dynamic]Instance_Data,
 }
 
 init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
@@ -93,11 +88,13 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 		r.window.height,
 	)
 
-	// Setup Mesh Buffer
+	// Setup Index Buffer
+	index_count := SPRITE_MAX_SPRITES * 6 // each sprite has 2 quads so 6 indices
+	index_buf_size := vk.DeviceSize(index_count * size_of(u32))
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
-		size  = vk.DeviceSize(MESH_BUFFER_SIZE),
-		usage = {.VERTEX_BUFFER, .INDEX_BUFFER},
+		size  = index_buf_size,
+		usage = {.INDEX_BUFFER},
 	}
 	buffer_alloc_create_info := vma.Allocation_Create_Info {
 		flags = {.Host_Access_Sequential_Write, .Host_Access_Allow_Transfer_Instead, .Mapped},
@@ -108,11 +105,26 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 			r.gpu.allocator,
 			buffer_create_info,
 			buffer_alloc_create_info,
-			&r.resources.mesh_buffer,
-			&r.resources.mesh_alloc,
+			&r.resources.index_buffer,
+			&r.resources.index_alloc,
 			nil,
 		),
 	)
+	alloc_info: vma.Allocation_Info
+	vma.get_allocation_info(r.gpu.allocator, r.resources.index_alloc, &alloc_info)
+	indices := cast([^]u32)alloc_info.mapped_data
+	for i in 0 ..< SPRITE_MAX_SPRITES {
+		v_offset := u32(i * 4) // base vertex of quad
+		i_offset := i * 6 // position in index buffer
+
+		indices[i_offset + 0] = v_offset + 0
+		indices[i_offset + 1] = v_offset + 1
+		indices[i_offset + 2] = v_offset + 2
+		indices[i_offset + 3] = v_offset + 2
+		indices[i_offset + 4] = v_offset + 3
+		indices[i_offset + 5] = v_offset + 0
+	}
+	vma.flush_allocation(r.gpu.allocator, r.resources.index_alloc, 0, index_buf_size)
 
 	// Init global sampler
 	sampler_create_info := vk.SamplerCreateInfo {
@@ -130,7 +142,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		u_buffer_create_info := vk.BufferCreateInfo {
 			sType = .BUFFER_CREATE_INFO,
-			size  = size_of(Shader_Data),
+			size  = size_of(Sprite_Shader_Data),
 			usage = {.SHADER_DEVICE_ADDRESS},
 		}
 		u_buffer_alloc_create_info := vma.Allocation_Create_Info {
@@ -296,11 +308,10 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES)
 	vk_pipeline_init(
 		r.gpu.device,
-		Push_Constants,
-		Vertex,
+		Sprite_Push_Constants,
+		Sprite_Instance,
 		&r.resources.tex_desc_set_layout,
 		r.shader_module,
-		r.swapchain.depth_format,
 		&r.pipeline_layout,
 		&r.pipeline,
 	)
@@ -310,12 +321,8 @@ start :: proc(r: ^Renderer, projection: Mat4f, view: Mat4f) -> ^Frame_Context {
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
 
 	fctx := &r.frame_contexts[r.frame_index]
-	for mh, &instances in fctx.draw_meshes {
-		clear(&instances)
-	}
-
-	fctx.shader_data.projection = projection
-	fctx.shader_data.view = view
+	fctx.num_sprites = 0
+	fctx.shader_data.projection_view = projection * view
 
 	return fctx
 }
@@ -342,17 +349,13 @@ present :: proc(r: ^Renderer) {
 	}
 
 	// Store updated shader data
-	instance_offset := 0
-	for mh, mesh_instances in fctx.draw_meshes {
-		// copy all the meshes of a specific type as a contiguous block so we
-		// can draw indexed
-		for instance, i in mesh_instances {
-			fctx.shader_data.instances[instance_offset + i] = instance
-		}
-		instance_offset += len(mesh_instances)
-	}
-	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Shader_Data))
-	vma.flush_allocation(r.gpu.allocator, fctx.shader_data_buffer.alloc, 0, size_of(Shader_Data))
+	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Sprite_Shader_Data))
+	vma.flush_allocation(
+		r.gpu.allocator,
+		fctx.shader_data_buffer.alloc,
+		0,
+		size_of(Sprite_Shader_Data),
+	)
 
 	// Record command buffer
 	cb := fctx.command_buffer
@@ -374,17 +377,6 @@ present :: proc(r: ^Renderer) {
 			image = r.swapchain.images[image_index],
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		},
-		{
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			srcStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-			srcAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-			dstStageMask = {.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-			dstAccessMask = {.DEPTH_STENCIL_ATTACHMENT_WRITE},
-			oldLayout = .UNDEFINED,
-			newLayout = .ATTACHMENT_OPTIMAL,
-			image = r.swapchain.depth_image,
-			subresourceRange = {aspectMask = {.DEPTH, .STENCIL}, levelCount = 1, layerCount = 1},
-		},
 	}
 	barrier_dep_info := vk.DependencyInfo {
 		sType                   = .DEPENDENCY_INFO,
@@ -400,14 +392,6 @@ present :: proc(r: ^Renderer) {
 		storeOp = .STORE,
 		clearValue = {color = {float32 = {0, 0, 0.2, 1}}},
 	}
-	depth_attachment_info := vk.RenderingAttachmentInfo {
-		sType = .RENDERING_ATTACHMENT_INFO,
-		imageView = r.swapchain.depth_view,
-		imageLayout = .ATTACHMENT_OPTIMAL,
-		loadOp = .CLEAR,
-		storeOp = .DONT_CARE,
-		clearValue = {depthStencil = {depth = 1, stencil = 0}},
-	}
 	// dynamic rendering
 	rendering_info := vk.RenderingInfo {
 		sType = .RENDERING_INFO,
@@ -415,17 +399,15 @@ present :: proc(r: ^Renderer) {
 		layerCount = 1,
 		colorAttachmentCount = 1,
 		pColorAttachments = &color_attachment_info,
-		pDepthAttachment = &depth_attachment_info,
+		// pDepthAttachment = &depth_attachment_info,
 	}
 	vk.CmdBeginRendering(cb, &rendering_info)
 	// here we swap the y-axis since vulkan y-axis point down
 	vp := vk.Viewport {
-		x        = 0,
-		y        = f32(r.window.height),
-		width    = f32(r.window.width),
-		height   = -f32(r.window.height),
-		minDepth = 0,
-		maxDepth = 1,
+		x      = 0,
+		y      = f32(r.window.height),
+		width  = f32(r.window.width),
+		height = -f32(r.window.height),
 	}
 	vk.CmdSetViewport(cb, 0, 1, &vp)
 	scissor := vk.Rect2D {
@@ -444,35 +426,20 @@ present :: proc(r: ^Renderer) {
 		nil,
 	)
 
-	next_instance_index := 0
-	for mh, mesh_instances in fctx.draw_meshes {
-		first_instance_index := next_instance_index
-		next_instance_index += len(mesh_instances)
-		m := r.resources.meshes[mh.idx]
-
-		vk.CmdBindVertexBuffers(cb, 0, 1, &r.resources.mesh_buffer, &m.vertex_offset)
-		vk.CmdBindIndexBuffer(cb, r.resources.mesh_buffer, m.index_offset, .UINT16)
-		sd := &fctx.shader_data
-		push_constants := Push_Constants {
-			shader_data = fctx.shader_data_buffer.device_addr,
-		}
-		vk.CmdPushConstants(
-			cb,
-			r.pipeline_layout,
-			{.VERTEX, .FRAGMENT},
-			0,
-			size_of(Push_Constants),
-			&push_constants,
-		)
-		vk.CmdDrawIndexed(
-			cb,
-			u32(m.index_count),
-			u32(len(mesh_instances)),
-			0,
-			0,
-			u32(first_instance_index),
-		)
+	vk.CmdBindIndexBuffer(cb, r.resources.index_buffer, 0, .UINT32)
+	push_constants := Sprite_Push_Constants {
+		data = fctx.shader_data_buffer.device_addr,
 	}
+	vk.CmdPushConstants(
+		cb,
+		r.pipeline_layout,
+		{.VERTEX, .FRAGMENT},
+		0,
+		size_of(Sprite_Push_Constants),
+		&push_constants,
+	)
+	total_indices_to_draw := fctx.num_sprites * 6
+	vk.CmdDrawIndexed(cb, u32(total_indices_to_draw), 1, 0, 0, 0)
 
 	vk.CmdEndRendering(cb)
 	barrier_present := vk.ImageMemoryBarrier2 {
@@ -556,7 +523,7 @@ destroy :: proc(r: ^Renderer) {
 
 	swapchain_context_destroy(&r.swapchain, r.gpu.device, r.gpu.allocator)
 
-	vma.destroy_buffer(r.gpu.allocator, r.resources.mesh_buffer, r.resources.mesh_alloc)
+	vma.destroy_buffer(r.gpu.allocator, r.resources.index_buffer, r.resources.index_alloc)
 
 	for t in r.resources.textures {
 		vk.DestroyImageView(r.gpu.device, t.view, nil)
@@ -611,8 +578,6 @@ swapchain_context_init :: proc(
 		for swi in sc.views {
 			vk.DestroyImageView(sc.gpu.device, swi, nil)
 		}
-		vma.destroy_image(sc.gpu.allocator, sc.depth_image, sc.depth_alloc)
-		vk.DestroyImageView(sc.gpu.device, sc.depth_view, nil)
 	}
 
 	sc.create_info = vk.SwapchainCreateInfoKHR {
@@ -660,56 +625,6 @@ swapchain_context_init :: proc(
 		// must be destroyed after the new swapchain is created w/ the oldSwapchain passed in so the drivers can be clever and reuse internal resources to reduce the cost of a new swapchain
 		vk.DestroySwapchainKHR(sc.gpu.device, sc.create_info.oldSwapchain, nil)
 	}
-
-	depth_format_list := [2]vk.Format{.D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT}
-	for format in depth_format_list {
-		format_properties := vk.FormatProperties2 {
-			sType = .FORMAT_PROPERTIES_2,
-		}
-		vk.GetPhysicalDeviceFormatProperties2(sc.gpu.physical, format, &format_properties)
-		if .DEPTH_STENCIL_ATTACHMENT in format_properties.formatProperties.optimalTilingFeatures {
-			sc.depth_format = format
-			break
-		}
-	}
-	depth_create_info := vk.ImageCreateInfo {
-		sType = .IMAGE_CREATE_INFO,
-		imageType = .D2,
-		format = sc.depth_format,
-		extent = vk.Extent3D{width = u32(window_width), height = u32(window_height), depth = 1},
-		mipLevels = 1,
-		arrayLayers = 1,
-		samples = {._1},
-		tiling = .OPTIMAL,
-		usage = {.DEPTH_STENCIL_ATTACHMENT},
-		initialLayout = .UNDEFINED,
-	}
-	alloc_create_info := vma.Allocation_Create_Info {
-		flags = {.Dedicated_Memory},
-		usage = .Auto,
-	}
-	vk_assert(
-		vma.create_image(
-			sc.gpu.allocator,
-			depth_create_info,
-			alloc_create_info,
-			&sc.depth_image,
-			&sc.depth_alloc,
-			nil,
-		),
-	)
-	depth_view_create_info := vk.ImageViewCreateInfo {
-		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = sc.depth_image,
-		viewType = .D2,
-		format = sc.depth_format,
-		subresourceRange = vk.ImageSubresourceRange {
-			aspectMask = {.DEPTH},
-			levelCount = 1,
-			layerCount = 1,
-		},
-	}
-	vk_assert(vk.CreateImageView(sc.gpu.device, &depth_view_create_info, nil, &sc.depth_view))
 }
 
 swapchain_context_destroy :: proc(
@@ -717,8 +632,6 @@ swapchain_context_destroy :: proc(
 	device: vk.Device,
 	allocator: vma.Allocator,
 ) {
-	vma.destroy_image(allocator, sc.depth_image, sc.depth_alloc)
-	vk.DestroyImageView(device, sc.depth_view, nil)
 	for iv in sc.views {
 		vk.DestroyImageView(device, iv, nil)
 	}
@@ -801,25 +714,31 @@ gpu_init :: proc(dctx: ^GPU_Context) {
 
 	// SETUP DEVICE
 	device_extensions := []cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
+	enabled_vk10_features := vk.PhysicalDeviceFeatures {
+		samplerAnisotropy = true,
+	}
+	enabled_vk11_features := vk.PhysicalDeviceVulkan11Features {
+		sType                = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		shaderDrawParameters = true,
+	}
 	enabled_vk12_features := vk.PhysicalDeviceVulkan12Features {
 		sType                                    = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		pNext                                    = &enabled_vk11_features,
 		descriptorIndexing                       = true,
 		descriptorBindingVariableDescriptorCount = true,
 		runtimeDescriptorArray                   = true,
 		bufferDeviceAddress                      = true,
 	}
-	enabled_vk13_featues := vk.PhysicalDeviceVulkan13Features {
+	enabled_vk13_features := vk.PhysicalDeviceVulkan13Features {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 		pNext            = &enabled_vk12_features,
 		synchronization2 = true,
 		dynamicRendering = true,
 	}
-	enabled_vk10_features := vk.PhysicalDeviceFeatures {
-		samplerAnisotropy = true,
-	}
+
 	device_create_info := vk.DeviceCreateInfo {
 		sType                   = .DEVICE_CREATE_INFO,
-		pNext                   = &enabled_vk13_featues,
+		pNext                   = &enabled_vk13_features,
 		queueCreateInfoCount    = 1,
 		pQueueCreateInfos       = &queue_create_info,
 		enabledExtensionCount   = u32(len(device_extensions)),
@@ -866,76 +785,25 @@ gpu_destroy :: proc(gctx: ^GPU_Context) {
 	vk.DestroyInstance(gctx.instance, nil)
 }
 
-Mesh :: struct {
-	vertex_offset: vk.DeviceSize, // location within the global buffer
-	index_offset:  vk.DeviceSize, // location within the global buffer
-	index_count:   int,
-}
-
-Mesh_Handle :: struct {
-	idx: int,
-}
-
-mesh_load :: proc(r: ^Renderer, vertices: []Vertex, indices: []u16) -> Mesh_Handle {
-	@(static) buffer_offset: uintptr = 0
-	MESH_ALIGNMENT :: 16
-
-	v_bytes := len(vertices) * size_of(Vertex)
-	i_bytes := len(indices) * size_of(u16)
-	v_offset := mem.align_forward_uintptr(buffer_offset, MESH_ALIGNMENT)
-	i_offset := mem.align_forward_uintptr(v_offset + uintptr(v_bytes), MESH_ALIGNMENT)
-	end_offset := i_offset + uintptr(i_bytes)
-
-	if end_offset > MESH_BUFFER_SIZE {
-		panic("mesh_buffer is too full")
-	}
-
-	base_ptr: rawptr
-	vk_assert(vma.map_memory(r.gpu.allocator, r.resources.mesh_alloc, &base_ptr))
-
-	// copy vertices
-	v_write_ptr := rawptr(uintptr(base_ptr) + v_offset)
-	mem.copy(v_write_ptr, raw_data(vertices), v_bytes)
-
-	// copy indices
-	i_write_ptr := rawptr(uintptr(base_ptr) + uintptr(i_offset))
-	mem.copy(i_write_ptr, raw_data(indices), i_bytes)
-
-	// cleanup
-	vma.flush_allocation(
-		r.gpu.allocator,
-		r.resources.mesh_alloc,
-		vk.DeviceSize(v_offset),
-		vk.DeviceSize(end_offset - v_offset),
-	)
-	vma.unmap_memory(r.gpu.allocator, r.resources.mesh_alloc)
-	buffer_offset = end_offset
-
-	handle := Mesh_Handle {
-		idx = len(r.resources.meshes),
-	}
-	m := Mesh {
-		index_count   = len(indices),
-		vertex_offset = vk.DeviceSize(v_offset),
-		index_offset  = vk.DeviceSize(i_offset),
-	}
-	append(&r.resources.meshes, m)
-	return handle
-}
-
-draw_mesh :: proc(r: ^Renderer, m: Mesh_Handle, t: Texture_Handle, transform: Mat4f) {
+draw_sprite :: proc(
+	r: ^Renderer,
+	sh: Sprite_Handle,
+	position: [2]f32,
+	rotation: f32 = 0,
+	scale := [2]f32{1, 1},
+	color := [4]f32{},
+) {
 	fctx := &r.frame_contexts[r.frame_index]
-
-	// TODO: logging or something when MAX_INSTANCES is reached
-	if len(r.resources.meshes) <= m.idx do return
-	if len(fctx.draw_meshes) >= MAX_INSTANCES do return
-
-	mesh_instances, ok := &fctx.draw_meshes[m]
-	if !ok {
-		fctx.draw_meshes[m] = [dynamic]Instance_Data{}
-		mesh_instances = &fctx.draw_meshes[m]
+	sprite := r.resources.sprites[sh.idx]
+	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
+	fctx.shader_data.sprites[fctx.num_sprites] = Sprite_Instance {
+		pos           = position,
+		scale         = pixel_scale,
+		rotation      = rotation,
+		texture_index = u32(sprite.texture.idx),
+		color         = color,
 	}
-	append(mesh_instances, Instance_Data{model = transform, texture_index = u32(t.idx)})
+	fctx.num_sprites += 1
 }
 
 Texture :: struct {
@@ -1068,6 +936,7 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 
 // Create a Texture on the CPU, but don't upload it to the GPU. Generally prefer
 // directly using `texture_load` to create and load to the GPU in one shot.
+@(private)
 texture_create :: proc(r: ^Renderer, format: vk.Format, width, height, mipLevels: u32) -> Texture {
 	tex: Texture
 	tex.sampler = r.resources.tex_sampler
@@ -1106,4 +975,25 @@ texture_create :: proc(r: ^Renderer, format: vk.Format, width, height, mipLevels
 	}
 	vk_assert(vk.CreateImageView(r.gpu.device, &tex_view_create_info, nil, &tex.view))
 	return tex
+}
+
+Sprite :: struct {
+	texture: Texture_Handle,
+	width:   f32,
+	height:  f32,
+}
+
+Sprite_Handle :: struct {
+	idx: int,
+}
+
+sprite_create :: proc(r: ^Renderer, t: Texture_Handle, width, height: f32) -> Sprite_Handle {
+	s := Sprite {
+		texture = t,
+		width   = width,
+		height  = height,
+	}
+	idx := len(r.resources.sprites)
+	append(&r.resources.sprites, s)
+	return Sprite_Handle{idx = idx}
 }

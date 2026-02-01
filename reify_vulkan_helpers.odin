@@ -171,7 +171,6 @@ vk_pipeline_init :: proc(
 	$Vertex_Type: typeid,
 	desc_set_layout: ^vk.DescriptorSetLayout,
 	shader_module: vk.ShaderModule,
-	depth_format: vk.Format,
 	out_pipeline_layout: ^vk.PipelineLayout,
 	out_pipeline: ^vk.Pipeline,
 ) {
@@ -189,19 +188,8 @@ vk_pipeline_init :: proc(
 	vk_assert(
 		vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout),
 	)
-	vertex_binding := vk.VertexInputBindingDescription {
-		binding   = 0,
-		stride    = size_of(Vertex_Type),
-		inputRate = .VERTEX,
-	}
-	vertex_attributes := get_vertex_attributes(Vertex_Type)
-	defer delete(vertex_attributes)
 	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
-		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		vertexBindingDescriptionCount   = 1,
-		pVertexBindingDescriptions      = &vertex_binding,
-		vertexAttributeDescriptionCount = u32(len(vertex_attributes)),
-		pVertexAttributeDescriptions    = raw_data(vertex_attributes),
+		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 	}
 	input_assembly_state := vk.PipelineInputAssemblyStateCreateInfo {
 		sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -232,23 +220,16 @@ vk_pipeline_init :: proc(
 		dynamicStateCount = u32(len(dynamic_states)),
 		pDynamicStates    = raw_data(dynamic_states),
 	}
-	depth_stencil_state := vk.PipelineDepthStencilStateCreateInfo {
-		sType            = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		depthTestEnable  = true,
-		depthWriteEnable = true,
-		depthCompareOp   = .LESS_OR_EQUAL,
-	}
 	rendering_create_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
 		pColorAttachmentFormats = &IMAGE_FORMAT,
-		depthAttachmentFormat   = depth_format,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
 		colorWriteMask      = {.R, .G, .B, .A},
 		blendEnable         = true,
 		srcColorBlendFactor = .SRC_ALPHA,
-		dstColorBlendFactor = .ONE_MINUS_SRC_COLOR,
+		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
 		colorBlendOp        = .ADD,
 	}
 	color_blend_state := vk.PipelineColorBlendStateCreateInfo {
@@ -274,7 +255,6 @@ vk_pipeline_init :: proc(
 		pViewportState      = &viewport_state,
 		pRasterizationState = &rasterization_state,
 		pMultisampleState   = &multisample_state,
-		pDepthStencilState  = &depth_stencil_state,
 		pColorBlendState    = &color_blend_state,
 		pDynamicState       = &dynamic_state,
 		layout              = out_pipeline_layout^,
