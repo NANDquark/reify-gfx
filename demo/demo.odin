@@ -50,7 +50,8 @@ main :: proc() {
 	grass_tex := re.texture_load(&renderer, grass_pixels, grass_img.width, grass_img.height)
 	grass_sprite := re.sprite_create(&renderer, grass_tex, 16, 16)
 
-	cam_pos := [3]f32{0, 0, 0}
+	cam_pos := [2]f32{0, 0}
+	cam_zoom: f32 = 10
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -63,30 +64,12 @@ main :: proc() {
 		glfw.PollEvents()
 		// Zoom with mouse wheel
 		if scroll_offset != {} {
-			cam_pos.z += f32(scroll_offset.y) * 0.025 * dt
+			cam_zoom += f32(scroll_offset.y) * 0.025 * dt
 		}
-
-		// Update shader data
-		// TODO: move projection inside Renderer
-		window_ratio := f32(window_width) / f32(window_height)
-		projection := linalg.matrix_ortho3d(0, f32(window_width), 0, f32(window_height), -1, 1)
-			// odinfmt: disable
-		vk_correction := re.Mat4f{
-			1, 0, 0,   0,
-			0, 1, 0,   0,
-			0, 0, 0.5, 0.5,
-			0, 0, 0,   1,
-		}
-		projection = vk_correction * projection
-		// odinfmt: enable
-
-		// TODO: convert into camera movement procs on renderer with cam_pos
-		// stored internally
-		view := linalg.matrix4_translate(cam_pos)
 
 		// Draw!
-		fctx := re.start(&renderer, projection, view)
-		instance_pos := [2]f32{f32(window_width) / 2, f32(window_height) / 2}
+		fctx := re.start(&renderer, cam_pos, cam_zoom)
+		instance_pos := [2]f32{0, 0}
 		re.draw_sprite(&renderer, grass_sprite, instance_pos)
 		re.present(&renderer)
 	}

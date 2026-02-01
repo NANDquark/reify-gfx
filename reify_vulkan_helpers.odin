@@ -3,6 +3,7 @@ package reify
 
 import "base:runtime"
 import "core:fmt"
+import "core:math/linalg"
 import "core:mem"
 import "core:reflect"
 import vk "vendor:vulkan"
@@ -376,4 +377,19 @@ type_to_vk_format :: proc(info: ^reflect.Type_Info) -> vk.Format {
 		panic("unimplemented type conversion in Vertex")
 	}
 	return .UNDEFINED
+}
+
+// Create an orthographic projection in the vulkan style
+vk_ortho_projection :: proc(l, r, t, b, n, f: f32) -> Mat4f {
+	gl_projection := linalg.matrix_ortho3d(l, r, b, t, n, f)
+	// odinfmt: disable
+	vk_correction := Mat4f{
+		1, 0, 0,   0,
+		0, 1, 0,   0,
+	 	0, 0, 0.5, 0.5,
+		0, 0, 0,   1,
+	}
+	// odinfmt: enable
+	vk_projection := vk_correction * gl_projection
+	return vk_projection
 }

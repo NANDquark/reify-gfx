@@ -2,6 +2,7 @@ package reify
 
 import "base:runtime"
 import "core:fmt"
+import "core:math/linalg"
 import "core:mem"
 import "lib/vma"
 import "vendor:glfw"
@@ -17,8 +18,9 @@ Renderer :: struct {
 	gpu:             GPU_Context,
 	surface:         vk.SurfaceKHR,
 	window:          struct {
-		width:  i32,
-		height: i32,
+		width:      i32,
+		height:     i32,
+		projection: Mat4f,
 	},
 	swapchain:       Swapchain_Context,
 	resources:       struct {
@@ -77,6 +79,14 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	// SETUP SURFACE
 	vk_assert(glfw.CreateWindowSurface(r.gpu.instance, window, nil, &r.surface))
 	r.window.width, r.window.height = glfw.GetWindowSize(window)
+	r.window.projection = vk_ortho_projection(
+		0,
+		f32(r.window.width),
+		0,
+		f32(r.window.height),
+		-1,
+		1,
+	)
 	surface_caps: vk.SurfaceCapabilitiesKHR
 	vk_assert(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &surface_caps))
 	swapchain_context_init(
@@ -317,12 +327,18 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	)
 }
 
-start :: proc(r: ^Renderer, projection: Mat4f, view: Mat4f) -> ^Frame_Context {
+// Camera is at position (x, y) with zoom z
+start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame_Context {
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
-
 	fctx := &r.frame_contexts[r.frame_index]
+
+	center_x, center_y := f32(r.window.width) * 0.5, f32(r.window.height) * 0.5
+	view := linalg.matrix4_translate([3]f32{center_x, center_y, 0})
+	view *= linalg.matrix4_scale([3]f32{camera_zoom, camera_zoom, 1})
+	view *= linalg.matrix4_translate([3]f32{-camera_position.x, -camera_position.y, 0})
+
+	fctx.shader_data.projection_view = r.window.projection * view
 	fctx.num_sprites = 0
-	fctx.shader_data.projection_view = projection * view
 
 	return fctx
 }
@@ -561,6 +577,7 @@ Mat4f :: matrix[4, 4]f32
 window_resize :: proc(r: ^Renderer, width, height: i32) {
 	r.window.width = width
 	r.window.height = height
+	r.window.projection = vk_ortho_projection(0, f32(width), 0, f32(height), -1, 1)
 	r.swapchain.needs_update = true
 }
 
