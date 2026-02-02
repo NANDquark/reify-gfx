@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-02-02 05:28:52.133784454 +0000 UTC
+// Generated: 2026-02-02 06:16:19.705272507 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
@@ -11,7 +11,7 @@ Sprite_Instance :: struct #align (16) {
     scale: [2]f32,
     rotation: f32,
     texture_index: u32,
-    type: u32,
+    type: [2]u16,
     _pad0: [SPRITE_MAX__PAD0]u32,
     color: [4]f32,
 }
@@ -26,8 +26,9 @@ Sprite_Push_Constants :: struct #align (16) {
     data: vk.DeviceAddress,
 }
 
-Sprite_Instance_Type :: enum u32 {
+Sprite_Instance_Type :: enum u8 {
 	Sprite = 0,
 	Rect = 1,
+	Circle = 2,
 }
 

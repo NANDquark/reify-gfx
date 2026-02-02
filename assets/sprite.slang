@@ -6,15 +6,19 @@ struct Instance {
   float2 scale;
   float rotation; // Rotation in radians
   uint32_t texture_index;
-  uint32_t type;
+  vector<uint16_t, 2> type;
   uint32_t _pad0[1];
   float4 color;
+
+  Instance_Type getType() { return Instance_Type(type[0]); }
+  uint16_t getTypeArg() { return type[1]; }
 };
 
 // Remember to update shader_types_gen since it can't get enums automatically
-enum Instance_Type : uint32_t {
+enum Instance_Type : uint16_t {
   Sprite = 0,
   Rect = 1,
+  Circle = 2,
 }
 
 struct VertexOutput {
@@ -78,10 +82,17 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 [shader("fragment")]
 float4 fragMain(VertexOutput input) {
   Instance instance = pc.data->instances[input.instance_index];
-  if (instance.type == Instance_Type.Sprite) {
+  Instance_Type instance_type = instance.getType();
+  if (instance_type == Instance_Type.Sprite) {
     return textures[input.texture_index].Sample(input.uv);
-  } else if (instance.type == Instance_Type.Rect) {
+  } else if (instance_type == Instance_Type.Rect) {
     return instance.color;
+  } else if (instance_type == Instance_Type.Circle) {
+    float d = distance(input.uv, float2(0.5, 0.5));
+    float alpha = 1.0 - smoothstep(0.48, 0.5, d);
+    if (alpha <= 0.0)
+      discard;
+    return float4(instance.color.rgb, instance.color.a * alpha);
   }
   return instance.color;
 }

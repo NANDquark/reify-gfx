@@ -71,6 +71,7 @@ main :: proc() {
 		instance_pos := [2]f32{0, 0}
 		re.draw_sprite(&renderer, grass_sprite, instance_pos)
 		re.draw_rect(&renderer, {-50, -50}, {255, 0, 0, 255}, 50, 50)
+		re.draw_circle(&renderer, {50, 50}, {0, 255, 0, 255}, 50)
 		re.present(&renderer)
 	}
 }

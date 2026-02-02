@@ -64,8 +64,8 @@ run :: proc() -> Error {
 			enums = {
 				{
 					name = "Instance_Type",
-					type = Scalar_Type_UINT32,
-					values = {{"Sprite", 0}, {"Rect", 1}},
+					type = Scalar_Type_UINT8,
+					values = {{"Sprite", 0}, {"Rect", 1}, {"Circle", 2}},
 				},
 			},
 			prefix = "Sprite_",
@@ -210,12 +210,14 @@ Shader_Vector :: struct {
 }
 
 Scalar_Type :: distinct string
+Scalar_Type_UINT8: Scalar_Type = "uint8"
 Scalar_Type_UINT16: Scalar_Type = "uint16"
 Scalar_Type_UINT32: Scalar_Type : "uint32"
 Scalar_Type_UINT64: Scalar_Type : "uint64"
 Scalar_Type_FLOAT32: Scalar_Type : "float32"
 
 SCALAR_TO_ODIN := map[Scalar_Type]string {
+	Scalar_Type_UINT8   = "u8",
 	Scalar_Type_UINT16  = "u16",
 	Scalar_Type_UINT32  = "u32",
 	Scalar_Type_UINT64  = "u64",

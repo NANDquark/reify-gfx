@@ -822,7 +822,7 @@ draw_sprite :: proc(
 		rotation      = rotation,
 		texture_index = u32(sprite.texture.idx),
 		color         = color_to_f32(color),
-		type          = u32(Sprite_Instance_Type.Sprite),
+		type          = {u16(Sprite_Instance_Type.Sprite), 0},
 	}
 	fctx.num_sprites += 1
 }
@@ -841,7 +841,18 @@ draw_rect :: proc(
 		scale    = {width, height},
 		rotation = rotation,
 		color    = color_to_f32(color),
-		type     = u32(Sprite_Instance_Type.Rect),
+		type     = {u16(Sprite_Instance_Type.Rect), 0},
+	}
+	fctx.num_sprites += 1
+}
+
+draw_circle :: proc(r: ^Renderer, position: [2]f32, color: Color, radius: f32) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
+		pos   = position,
+		scale = {radius, radius},
+		color = color_to_f32(color),
+		type  = {u16(Sprite_Instance_Type.Circle), 0},
 	}
 	fctx.num_sprites += 1
 }
