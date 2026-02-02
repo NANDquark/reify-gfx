@@ -45,7 +45,7 @@
                             "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
                         },
                         {
-                            "name": "sprites",
+                            "name": "instances",
                             "type": {
                                 "kind": "array",
                                 "elementCount": 102400,
@@ -94,17 +94,25 @@
                                             "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
                                         },
                                         {
+                                            "name": "type",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                        },
+                                        {
                                             "name": "_pad0",
                                             "type": {
                                                 "kind": "array",
-                                                "elementCount": 2,
+                                                "elementCount": 1,
                                                 "elementType": {
                                                     "kind": "scalar",
                                                     "scalarType": "uint32"
                                                 },
                                                 "uniformStride": 4
                                             },
-                                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 4}
+                                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 4}
                                         },
                                         {
                                             "name": "color",
@@ -186,7 +194,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 2},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 3},
                 "type": {
                     "kind": "struct",
                     "name": "VertexOutput",
@@ -224,6 +232,15 @@
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 1}
+                        },
+                        {
+                            "name": "instance_index",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 2}
                         }
                     ]
                 }
@@ -250,7 +267,7 @@
                 {
                     "name": "input",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 2},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 3},
                     "type": {
                         "kind": "struct",
                         "name": "VertexOutput",
@@ -288,6 +305,15 @@
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 1}
+                            },
+                            {
+                                "name": "instance_index",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 2}
                             }
                         ]
                     }

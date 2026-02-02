@@ -99,7 +99,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	)
 
 	// Setup Index Buffer
-	index_count := SPRITE_MAX_SPRITES * 6 // each sprite has 2 quads so 6 indices
+	index_count := SPRITE_MAX_INSTANCES * 6 // each sprite has 2 quads so 6 indices
 	index_buf_size := vk.DeviceSize(index_count * size_of(u32))
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
@@ -123,7 +123,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	alloc_info: vma.Allocation_Info
 	vma.get_allocation_info(r.gpu.allocator, r.resources.index_alloc, &alloc_info)
 	indices := cast([^]u32)alloc_info.mapped_data
-	for i in 0 ..< SPRITE_MAX_SPRITES {
+	for i in 0 ..< SPRITE_MAX_INSTANCES {
 		v_offset := u32(i * 4) // base vertex of quad
 		i_offset := i * 6 // position in index buffer
 
@@ -811,17 +811,37 @@ draw_sprite :: proc(
 	position: [2]f32,
 	rotation: f32 = 0,
 	scale := [2]f32{1, 1},
-	color := [4]f32{},
+	color := Color{},
 ) {
 	fctx := &r.frame_contexts[r.frame_index]
 	sprite := r.resources.sprites[sh.idx]
 	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
-	fctx.shader_data.sprites[fctx.num_sprites] = Sprite_Instance {
+	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
 		pos           = position,
 		scale         = pixel_scale,
 		rotation      = rotation,
 		texture_index = u32(sprite.texture.idx),
-		color         = color,
+		color         = color_to_f32(color),
+		type          = u32(Sprite_Instance_Type.Sprite),
+	}
+	fctx.num_sprites += 1
+}
+
+draw_rect :: proc(
+	r: ^Renderer,
+	position: [2]f32,
+	color: Color,
+	width, height: f32,
+	rotation: f32 = 0,
+) {
+	fctx := &r.frame_contexts[r.frame_index]
+	// TODO load a default "unknown texture" into textures slot 0
+	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
+		pos      = position,
+		scale    = {width, height},
+		rotation = rotation,
+		color    = color_to_f32(color),
+		type     = u32(Sprite_Instance_Type.Rect),
 	}
 	fctx.num_sprites += 1
 }
@@ -838,6 +858,15 @@ Texture_Handle :: struct {
 }
 
 Color :: [4]u8
+
+color_to_f32 :: proc(color: Color) -> [4]f32 {
+	return [4]f32 {
+		f32(color[0]) / 255.0,
+		f32(color[1]) / 255.0,
+		f32(color[2]) / 255.0,
+		f32(color[3]) / 255.0,
+	}
+}
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
 // used later to render with that Texture.

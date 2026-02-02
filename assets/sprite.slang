@@ -6,27 +6,36 @@ struct Instance {
   float2 scale;
   float rotation; // Rotation in radians
   uint32_t texture_index;
-  uint32_t _pad0[2];
+  uint32_t type;
+  uint32_t _pad0[1];
   float4 color;
 };
+
+// Remember to update shader_types_gen since it can't get enums automatically
+enum Instance_Type : uint32_t {
+  Sprite = 0,
+  Rect = 1,
+}
 
 struct VertexOutput {
   float4 pos : SV_POSITION;
   float2 uv;
-  uint32_t texture_index;
+  nointerpolation uint32_t texture_index;
+  nointerpolation uint32_t instance_index;
 };
 
-const static uint MAX_SPRITES = 100 * 1024;
+const static uint MAX_INSTANCES = 100 * 1024;
 
 struct Shader_Data {
   column_major float4x4 projection_view; // combined once on CPU
-  Instance sprites[MAX_SPRITES];
+  Instance instances[MAX_INSTANCES];
 };
 
 struct Push_Constants {
   Shader_Data *data;
 };
 
+// This exposes the Shader_Data to the reflection_types JSON output
 StructuredBuffer<Shader_Data> _ReflectionAnchor;
 
 [[vk::push_constant]]
@@ -41,21 +50,22 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
   // to expand each sprite into 4 vertices. The div and modulo below converts
   // the indexed vertex ID to the single sprite index.
 
-  uint spriteIndex = vID / 4;
+  uint instanceIndex = vID / 4;
   uint cornerIndex = vID % 4;
-  Instance spriteData = pc.data->sprites[spriteIndex];
-  output.texture_index = spriteData.texture_index;
+  Instance instance = pc.data->instances[instanceIndex];
+  output.texture_index = instance.texture_index;
+  output.instance_index = instanceIndex;
 
   // Create a unit quad and transform it
   float2 corners[4] = { float2(-0.5, -0.5), float2(0.5, -0.5), float2(0.5, 0.5),
                         float2(-0.5, 0.5) };
   float2 localPos = corners[cornerIndex];
-  float2 scaled = localPos * spriteData.scale;
+  float2 scaled = localPos * instance.scale;
   float s, c;
-  sincos(spriteData.rotation, s, c);
+  sincos(instance.rotation, s, c);
   float2 rotated =
       float2(scaled.x * c - scaled.y * s, scaled.x * s + scaled.y * c);
-  float2 worldPos = rotated + spriteData.pos;
+  float2 worldPos = rotated + instance.pos;
 
   // Output the results for this sprite but only for the current vertex
   output.pos = mul(pc.data->projection_view, float4(worldPos, 0.0, 1.0));
@@ -67,5 +77,11 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 
 [shader("fragment")]
 float4 fragMain(VertexOutput input) {
-  return textures[input.texture_index].Sample(input.uv);
+  Instance instance = pc.data->instances[input.instance_index];
+  if (instance.type == Instance_Type.Sprite) {
+    return textures[input.texture_index].Sample(input.uv);
+  } else if (instance.type == Instance_Type.Rect) {
+    return instance.color;
+  }
+  return instance.color;
 }

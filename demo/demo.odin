@@ -7,7 +7,6 @@ import "core:fmt"
 import "core:image"
 import "core:image/png"
 import "core:log"
-import "core:math/linalg"
 import "core:slice"
 import "core:time"
 import "vendor:glfw"
@@ -51,7 +50,7 @@ main :: proc() {
 	grass_sprite := re.sprite_create(&renderer, grass_tex, 16, 16)
 
 	cam_pos := [2]f32{0, 0}
-	cam_zoom: f32 = 10
+	cam_zoom: f32 = 1
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -71,6 +70,7 @@ main :: proc() {
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 		instance_pos := [2]f32{0, 0}
 		re.draw_sprite(&renderer, grass_sprite, instance_pos)
+		re.draw_rect(&renderer, {-50, -50}, {255, 0, 0, 255}, 50, 50)
 		re.present(&renderer)
 	}
 }

@@ -33,7 +33,20 @@ Tool_Error :: enum {
 Shader_Config :: struct {
 	bytes:  []byte,
 	names:  []string,
+	enums:  []Enum,
 	prefix: string,
+}
+
+// TODO: parse slang and grab these automatically... sometime later
+Enum :: struct {
+	name:   string,
+	type:   Scalar_Type,
+	values: []Enum_Value,
+}
+
+Enum_Value :: struct {
+	name:  string,
+	value: int,
 }
 
 run :: proc() -> Error {
@@ -46,9 +59,16 @@ run :: proc() -> Error {
 
 	configs := []Shader_Config {
 		{
-			SPRITE_SHADER_TYPES_BYTES,
-			[]string{"Instance", "Shader_Data", "Push_Constants"},
-			"Sprite_",
+			bytes = SPRITE_SHADER_TYPES_BYTES,
+			names = {"Instance", "Shader_Data", "Push_Constants"},
+			enums = {
+				{
+					name = "Instance_Type",
+					type = Scalar_Type_UINT32,
+					values = {{"Sprite", 0}, {"Rect", 1}},
+				},
+			},
+			prefix = "Sprite_",
 		},
 	}
 
@@ -110,6 +130,20 @@ run :: proc() -> Error {
 				fmt.printfln("%s type not found", name)
 				return .Type_Not_Found
 			}
+		}
+
+		for e in config.enums {
+			fmt.sbprintfln(
+				&sb,
+				"%s%s :: enum %s {{",
+				config.prefix,
+				e.name,
+				SCALAR_TO_ODIN[e.type],
+			)
+			for v in e.values {
+				fmt.sbprintfln(&sb, "\t%s = %d,", v.name, v.value)
+			}
+			fmt.sbprintln(&sb, "}\n")
 		}
 	}
 
@@ -176,11 +210,13 @@ Shader_Vector :: struct {
 }
 
 Scalar_Type :: distinct string
+Scalar_Type_UINT16: Scalar_Type = "uint16"
 Scalar_Type_UINT32: Scalar_Type : "uint32"
 Scalar_Type_UINT64: Scalar_Type : "uint64"
 Scalar_Type_FLOAT32: Scalar_Type : "float32"
 
 SCALAR_TO_ODIN := map[Scalar_Type]string {
+	Scalar_Type_UINT16  = "u16",
 	Scalar_Type_UINT32  = "u32",
 	Scalar_Type_UINT64  = "u64",
 	Scalar_Type_FLOAT32 = "f32",
@@ -322,7 +358,7 @@ build_odin_type :: proc(field_def: ^Shader_Field, length_override: string = "") 
 		fmt.sbprint(&sb, "vk.DeviceAddress")
 	case .Vector:
 		fd := cast(^Shader_Vector)field_def
-		scalar_type := "f32" if fd.element_type.type == Scalar_Type_FLOAT32 else "i32"
+		scalar_type := SCALAR_TO_ODIN[fd.element_type.type]
 		fmt.sbprintf(&sb, "[%d]%s", fd.len, scalar_type)
 	case .Struct:
 		fd := cast(^Shader_Struct)field_def
