@@ -8,7 +8,7 @@ import "core:path/filepath"
 import "core:strings"
 import "core:time"
 
-SPRITE_SHADER_TYPES_BYTES :: #load("../../assets/sprite_shader_types.json")
+QUAD_SHADER_TYPES_BYTES :: #load("../../assets/quad_shader_types.json")
 
 main :: proc() {
 	if err := run(); err != nil {
@@ -59,7 +59,7 @@ run :: proc() -> Error {
 
 	configs := []Shader_Config {
 		{
-			bytes = SPRITE_SHADER_TYPES_BYTES,
+			bytes = QUAD_SHADER_TYPES_BYTES,
 			names = {"Instance", "Shader_Data", "Push_Constants"},
 			enums = {
 				{
@@ -68,7 +68,7 @@ run :: proc() -> Error {
 					values = {{"Sprite", 0}, {"Rect", 1}, {"Circle", 2}},
 				},
 			},
-			prefix = "Sprite_",
+			prefix = "Quad_",
 		},
 	}
 

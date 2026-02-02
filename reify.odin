@@ -8,7 +8,7 @@ import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-SHADER_BYTES :: #load("assets/sprite.spv")
+SHADER_BYTES :: #load("assets/quad.spv")
 MAX_FRAME_IN_FLIGHT :: 3
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
@@ -65,7 +65,7 @@ Swapchain_Context :: struct {
 Frame_Context :: struct {
 	fence:              vk.Fence,
 	present_semaphore:  vk.Semaphore,
-	shader_data:        Sprite_Shader_Data,
+	shader_data:        Quad_Shader_Data,
 	shader_data_buffer: Shader_Data_Buffer,
 	num_sprites:        int,
 	command_buffer:     vk.CommandBuffer,
@@ -99,7 +99,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	)
 
 	// Setup Index Buffer
-	index_count := SPRITE_MAX_INSTANCES * 6 // each sprite has 2 quads so 6 indices
+	index_count := QUAD_MAX_INSTANCES * 6 // each sprite has 2 quads so 6 indices
 	index_buf_size := vk.DeviceSize(index_count * size_of(u32))
 	buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
@@ -123,7 +123,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	alloc_info: vma.Allocation_Info
 	vma.get_allocation_info(r.gpu.allocator, r.resources.index_alloc, &alloc_info)
 	indices := cast([^]u32)alloc_info.mapped_data
-	for i in 0 ..< SPRITE_MAX_INSTANCES {
+	for i in 0 ..< QUAD_MAX_INSTANCES {
 		v_offset := u32(i * 4) // base vertex of quad
 		i_offset := i * 6 // position in index buffer
 
@@ -155,7 +155,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
 		u_buffer_create_info := vk.BufferCreateInfo {
 			sType = .BUFFER_CREATE_INFO,
-			size  = size_of(Sprite_Shader_Data),
+			size  = size_of(Quad_Shader_Data),
 			usage = {.SHADER_DEVICE_ADDRESS},
 		}
 		u_buffer_alloc_create_info := vma.Allocation_Create_Info {
@@ -321,8 +321,8 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES)
 	vk_pipeline_init(
 		r.gpu.device,
-		Sprite_Push_Constants,
-		Sprite_Instance,
+		Quad_Push_Constants,
+		Quad_Instance,
 		&r.resources.tex_desc_set_layout,
 		r.shader_module,
 		&r.pipeline_layout,
@@ -368,12 +368,12 @@ present :: proc(r: ^Renderer) {
 	}
 
 	// Store updated shader data
-	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Sprite_Shader_Data))
+	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Quad_Shader_Data))
 	vma.flush_allocation(
 		r.gpu.allocator,
 		fctx.shader_data_buffer.alloc,
 		0,
-		size_of(Sprite_Shader_Data),
+		size_of(Quad_Shader_Data),
 	)
 
 	// Record command buffer
@@ -446,7 +446,7 @@ present :: proc(r: ^Renderer) {
 	)
 
 	vk.CmdBindIndexBuffer(cb, r.resources.index_buffer, 0, .UINT32)
-	push_constants := Sprite_Push_Constants {
+	push_constants := Quad_Push_Constants {
 		data = fctx.shader_data_buffer.device_addr,
 	}
 	vk.CmdPushConstants(
@@ -454,7 +454,7 @@ present :: proc(r: ^Renderer) {
 		r.pipeline_layout,
 		{.VERTEX, .FRAGMENT},
 		0,
-		size_of(Sprite_Push_Constants),
+		size_of(Quad_Push_Constants),
 		&push_constants,
 	)
 	total_indices_to_draw := fctx.num_sprites * 6
@@ -816,13 +816,13 @@ draw_sprite :: proc(
 	fctx := &r.frame_contexts[r.frame_index]
 	sprite := r.resources.sprites[sh.idx]
 	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
-	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
+	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
 		pos           = position,
 		scale         = pixel_scale,
 		rotation      = rotation,
 		texture_index = u32(sprite.texture.idx),
 		color         = color_to_f32(color),
-		type          = {u16(Sprite_Instance_Type.Sprite), 0},
+		type          = {u16(Quad_Instance_Type.Sprite), 0},
 	}
 	fctx.num_sprites += 1
 }
@@ -836,23 +836,23 @@ draw_rect :: proc(
 ) {
 	fctx := &r.frame_contexts[r.frame_index]
 	// TODO load a default "unknown texture" into textures slot 0
-	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
+	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
 		pos      = position,
 		scale    = {width, height},
 		rotation = rotation,
 		color    = color_to_f32(color),
-		type     = {u16(Sprite_Instance_Type.Rect), 0},
+		type     = {u16(Quad_Instance_Type.Rect), 0},
 	}
 	fctx.num_sprites += 1
 }
 
 draw_circle :: proc(r: ^Renderer, position: [2]f32, color: Color, radius: f32) {
 	fctx := &r.frame_contexts[r.frame_index]
-	fctx.shader_data.instances[fctx.num_sprites] = Sprite_Instance {
+	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
 		pos   = position,
 		scale = {radius, radius},
 		color = color_to_f32(color),
-		type  = {u16(Sprite_Instance_Type.Circle), 0},
+		type  = {u16(Quad_Instance_Type.Circle), 0},
 	}
 	fctx.num_sprites += 1
 }
