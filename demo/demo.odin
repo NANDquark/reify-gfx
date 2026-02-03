@@ -65,7 +65,7 @@ main :: proc() {
 		// Draw!
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 
-		// batch 1 - draw shapes in the world, affected by camera
+		// batch 1 - draw shapes in the world, affected by camera (default projection)
 		re.draw_sprite(&renderer, tree_sprite, {0, 0}, color = re.Color{255, 0, 0, 128}) // tint it red and half-transparent for fun
 		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
 		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 255})

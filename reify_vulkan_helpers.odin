@@ -379,9 +379,9 @@ type_to_vk_format :: proc(info: ^reflect.Type_Info) -> vk.Format {
 	return .UNDEFINED
 }
 
-// Create an orthographic projection in the vulkan style
-vk_ortho_projection :: proc(l, r, t, b, n, f: f32) -> Mat4f {
-	gl_projection := linalg.matrix_ortho3d(l, r, b, t, n, f)
+// Create an orthographic projection in the Vulkan style
+vk_ortho_projection :: proc(left, right, bottom, top, near, far: f32) -> Mat4f {
+	gl_projection := linalg.matrix_ortho3d(left, right, bottom, top, near, far)
 	// odinfmt: disable
 	vk_correction := Mat4f{
 		1, 0, 0,   0,
@@ -390,6 +390,9 @@ vk_ortho_projection :: proc(l, r, t, b, n, f: f32) -> Mat4f {
 		0, 0, 0,   1,
 	}
 	// odinfmt: enable
+	// OpenGL NDC are from -1.0 to 1.0 but Vulkan NDC are 0 to 1. So here we scale
+	// the clipping plane by x0.5 to shrink the value to the correct number of
+	// units then translate it +0.5 so it sits from 0 - 1.
 	vk_projection := vk_correction * gl_projection
 	return vk_projection
 }

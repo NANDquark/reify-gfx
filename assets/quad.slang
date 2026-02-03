@@ -78,11 +78,7 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
     float2 p1 = instance.scale;
     float2 p2 = float2(instance.rotation, asfloat(instance._pad0));
     float2 triPoints[4] = { p0, p1, p2, p0 };
-    // float2 triUVs[4] = { float2(0.5, 0.0), float2(1.0, 1.0),
-    // float2(0.0, 1.0),
-    //                      float2(0.5, 0.0) };
     finalWorldPos = triPoints[cornerIndex];
-    // finalUV = triUVs[cornerIndex];
   } else {
     float2 quadCorners[4] = { float2(-0.5, -0.5), float2(0.5, -0.5),
                               float2(0.5, 0.5), float2(-0.5, 0.5) };

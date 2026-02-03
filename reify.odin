@@ -346,7 +346,49 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 	)
 }
 
-// Camera is at position (x, y) with zoom z
+destroy :: proc(r: ^Renderer) {
+	vk_assert(vk.DeviceWaitIdle(r.gpu.device))
+
+	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
+		fctx := &r.frame_contexts[i]
+		vk.DestroyFence(r.gpu.device, fctx.fence, nil)
+		vk.DestroySemaphore(r.gpu.device, fctx.present_semaphore, nil)
+		vma.unmap_memory(r.gpu.allocator, fctx.shader_data_buffer.alloc)
+		vma.destroy_buffer(
+			r.gpu.allocator,
+			fctx.shader_data_buffer.buffer,
+			fctx.shader_data_buffer.alloc,
+		)
+		delete(fctx.draw_batches)
+	}
+
+	swapchain_context_destroy(&r.swapchain, r.gpu.device, r.gpu.allocator)
+
+	for t in r.resources.textures {
+		vk.DestroyImageView(r.gpu.device, t.view, nil)
+		vma.destroy_image(r.gpu.allocator, t.image, t.alloc)
+		// t.sampler is shared in tex_sampler
+	}
+	vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
+	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.tex_desc_set_layout, nil)
+	vk.DestroyDescriptorPool(r.gpu.device, r.resources.tex_desc_pool, nil)
+	vma.destroy_buffer(r.gpu.allocator, r.resources.index_buffer, r.resources.index_alloc)
+	vma.destroy_buffer(
+		r.gpu.allocator,
+		r.resources.tex_staging_buffer,
+		r.resources.tex_staging_alloc,
+	)
+
+	vk.DestroyPipelineLayout(r.gpu.device, r.pipeline_layout, nil)
+	vk.DestroyPipeline(r.gpu.device, r.pipeline, nil)
+	vk.DestroyCommandPool(r.gpu.device, r.command_pool, nil)
+	vk.DestroyShaderModule(r.gpu.device, r.shader_module, nil)
+
+	vk.DestroySurfaceKHR(r.gpu.instance, r.surface, nil)
+
+	gpu_destroy(&r.gpu)
+}
+
 start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame_Context {
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
 	fctx := &r.frame_contexts[r.frame_index]
@@ -409,7 +451,7 @@ present :: proc(r: ^Renderer) {
 	vk_assert(vk.WaitForFences(r.gpu.device, 1, &fctx.fence, true, max(u64)))
 	vk_assert(vk.ResetFences(r.gpu.device, 1, &fctx.fence))
 
-	// Next image
+	// Next swapchain image
 	image_index: u32
 	if res := vk_chk_swapchain(
 		vk.AcquireNextImageKHR(
@@ -475,15 +517,14 @@ present :: proc(r: ^Renderer) {
 		layerCount = 1,
 		colorAttachmentCount = 1,
 		pColorAttachments = &color_attachment_info,
-		// pDepthAttachment = &depth_attachment_info,
 	}
 	vk.CmdBeginRendering(cb, &rendering_info)
-	// here we swap the y-axis since vulkan y-axis point down
+	// vulkan (0,0) is topleft like we want
 	vp := vk.Viewport {
 		x      = 0,
-		y      = f32(r.window.height),
+		y      = 0,
 		width  = f32(r.window.width),
-		height = -f32(r.window.height),
+		height = f32(r.window.height),
 	}
 	vk.CmdSetViewport(cb, 0, 1, &vp)
 	vk.CmdBindPipeline(cb, .GRAPHICS, r.pipeline)
@@ -558,6 +599,7 @@ present :: proc(r: ^Renderer) {
 		pSignalSemaphores    = &r.swapchain.render_semaphores[image_index],
 	}
 	vk_assert(vk.QueueSubmit(r.gpu.queue, 1, &submit_info, fctx.fence))
+
 	// present
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
@@ -589,49 +631,6 @@ present :: proc(r: ^Renderer) {
 			recreate = true,
 		)
 	}
-}
-
-destroy :: proc(r: ^Renderer) {
-	vk_assert(vk.DeviceWaitIdle(r.gpu.device))
-
-	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
-		fctx := &r.frame_contexts[i]
-		vk.DestroyFence(r.gpu.device, fctx.fence, nil)
-		vk.DestroySemaphore(r.gpu.device, fctx.present_semaphore, nil)
-		vma.unmap_memory(r.gpu.allocator, fctx.shader_data_buffer.alloc)
-		vma.destroy_buffer(
-			r.gpu.allocator,
-			fctx.shader_data_buffer.buffer,
-			fctx.shader_data_buffer.alloc,
-		)
-	}
-
-	swapchain_context_destroy(&r.swapchain, r.gpu.device, r.gpu.allocator)
-
-	vma.destroy_buffer(r.gpu.allocator, r.resources.index_buffer, r.resources.index_alloc)
-
-	for t in r.resources.textures {
-		vk.DestroyImageView(r.gpu.device, t.view, nil)
-		vma.destroy_image(r.gpu.allocator, t.image, t.alloc)
-		// t.sampler is shared in tex_sampler
-	}
-	vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
-	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.tex_desc_set_layout, nil)
-	vk.DestroyDescriptorPool(r.gpu.device, r.resources.tex_desc_pool, nil)
-	vma.destroy_buffer(
-		r.gpu.allocator,
-		r.resources.tex_staging_buffer,
-		r.resources.tex_staging_alloc,
-	)
-
-	vk.DestroyPipelineLayout(r.gpu.device, r.pipeline_layout, nil)
-	vk.DestroyPipeline(r.gpu.device, r.pipeline, nil)
-	vk.DestroyCommandPool(r.gpu.device, r.command_pool, nil)
-	vk.DestroyShaderModule(r.gpu.device, r.shader_module, nil)
-
-	vk.DestroySurfaceKHR(r.gpu.instance, r.surface, nil)
-
-	gpu_destroy(&r.gpu)
 }
 
 Shader_Data_Buffer :: struct {
