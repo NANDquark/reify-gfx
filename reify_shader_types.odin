@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-02-03 00:25:44.371663911 +0000 UTC
+// Generated: 2026-02-03 05:40:51.967743875 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
@@ -10,18 +10,18 @@ Quad_Instance :: struct #align (16) {
     scale: [2]f32,
     rotation: f32,
     texture_index: u32,
-    type: [2]u16,
+    type: u32,
     _pad0: u32,
-    color_tint: [4]f32,
+    color: [4]f32,
 }
 
 QUAD_MAX_INSTANCES :: 102400
 Quad_Shader_Data :: struct #align (16) {
-    projection_view: Mat4f,
     instances: [QUAD_MAX_INSTANCES]Quad_Instance,
 }
 
 Quad_Push_Constants :: struct #align (16) {
+    projection_view: Mat4f,
     data: vk.DeviceAddress,
 }
 

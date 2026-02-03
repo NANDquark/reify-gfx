@@ -43,13 +43,13 @@ main :: proc() {
 	window_width, window_height := glfw.GetWindowSize(window)
 	re.init(&renderer, window)
 
-	grass_img := load_tile_img()
-	defer image.destroy(grass_img)
-	grass_pixels := slice.reinterpret([]re.Color, grass_img.pixels.buf[:])
-	grass_tex := re.texture_load(&renderer, grass_pixels, grass_img.width, grass_img.height)
-	grass_sprite := re.sprite_create(&renderer, grass_tex, 16, 16)
+	tree_img := load_tile_img()
+	defer image.destroy(tree_img)
+	tree_pixels := slice.reinterpret([]re.Color, tree_img.pixels.buf[:])
+	tree_tex := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
+	tree_sprite := re.sprite_create(&renderer, tree_tex, 16, 16)
 
-	cam_pos := [2]f32{0, 0}
+	cam_pos := [2]f32{120, 120}
 	cam_zoom: f32 = 1
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
@@ -64,11 +64,24 @@ main :: proc() {
 
 		// Draw!
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
-		instance_pos := [2]f32{0, 0}
-		re.draw_sprite(&renderer, grass_sprite, instance_pos)
-		re.draw_rect(&renderer, {-50, -50}, re.Color{255, 0, 0, 255}, 50, 50)
-		re.draw_circle(&renderer, {50, 50}, re.Color{0, 255, 0, 255}, 50)
+
+		// batch 1 - draw shapes in the world, affected by camera
+		re.draw_sprite(&renderer, tree_sprite, {0, 0}, color = re.Color{255, 0, 0, 128}) // tint it red and half-transparent for fun
+		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
+		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 255})
 		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
+		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
+
+		// batch 2 - draw on the screen, not the world!
+		re.begin_screen_mode(&renderer)
+		re.draw_circle(
+			&renderer,
+			{f32(window_width) / 2, f32(window_height) / 2},
+			100,
+			re.Color{0, 0, 0, 255},
+		)
+		re.end_screen_mode(&renderer)
+
 		re.present(&renderer)
 	}
 }
@@ -83,11 +96,11 @@ scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {
 	scroll_offset = [2]f64{x_offset, y_offset}
 }
 
-GRASS_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0003.png")
+tree_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0003.png")
 
 load_tile_img :: proc() -> ^image.Image {
-	img, err := png.load_from_bytes(GRASS_TILE_BYTES)
-	assert(err == nil, fmt.tprintf("failed to load grass, err=%v", err))
+	img, err := png.load_from_bytes(tree_TILE_BYTES)
+	assert(err == nil, fmt.tprintf("failed to load tree, err=%v", err))
 	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
 	return img
 }

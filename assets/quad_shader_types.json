@@ -32,19 +32,6 @@
                     "name": "Shader_Data",
                     "fields": [
                         {
-                            "name": "projection_view",
-                            "type": {
-                                "kind": "matrix",
-                                "rowCount": 4,
-                                "columnCount": 4,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
-                            },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
-                        },
-                        {
                             "name": "instances",
                             "type": {
                                 "kind": "array",
@@ -96,14 +83,10 @@
                                         {
                                             "name": "type",
                                             "type": {
-                                                "kind": "vector",
-                                                "elementCount": 2,
-                                                "elementType": {
-                                                    "kind": "scalar",
-                                                    "scalarType": "uint16"
-                                                }
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
                                             },
-                                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 2}
+                                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                                         },
                                         {
                                             "name": "_pad0",
@@ -114,7 +97,7 @@
                                             "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
                                         },
                                         {
-                                            "name": "color_tint",
+                                            "name": "color",
                                             "type": {
                                                 "kind": "vector",
                                                 "elementCount": 4,
@@ -129,7 +112,7 @@
                                 },
                                 "uniformStride": 48
                             },
-                            "binding": {"kind": "uniform", "offset": 64, "size": 4915200, "elementStride": 48}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 4915200, "elementStride": 48}
                         }
                     ]
                 }
@@ -145,12 +128,25 @@
                     "name": "Push_Constants",
                     "fields": [
                         {
+                            "name": "projection_view",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                        },
+                        {
                             "name": "data",
                             "type": {
                                 "kind": "pointer",
                                 "valueType": "Shader_Data"
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 64, "size": 8, "elementStride": 0}
                         }
                     ]
                 },
@@ -163,16 +159,29 @@
                         "name": "Push_Constants",
                         "fields": [
                             {
+                                "name": "projection_view",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                            },
+                            {
                                 "name": "data",
                                 "type": {
                                     "kind": "pointer",
                                     "valueType": "Shader_Data"
                                 },
-                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 64, "size": 8, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
                 }
             }
         }

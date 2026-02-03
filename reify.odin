@@ -63,12 +63,28 @@ Swapchain_Context :: struct {
 }
 
 Frame_Context :: struct {
-	fence:              vk.Fence,
-	present_semaphore:  vk.Semaphore,
-	shader_data:        Quad_Shader_Data,
-	shader_data_buffer: Shader_Data_Buffer,
-	num_sprites:        int,
-	command_buffer:     vk.CommandBuffer,
+	fence:                  vk.Fence,
+	present_semaphore:      vk.Semaphore,
+	command_buffer:         vk.CommandBuffer,
+	shader_data:            Quad_Shader_Data,
+	shader_data_buffer:     Shader_Data_Buffer,
+	projection_type:        Projection_Type,
+	world_projection_view:  Mat4f,
+	screen_projection_view: Mat4f,
+	total_instances:        int,
+	draw_batches:           [dynamic]Draw_Batch,
+}
+
+Draw_Batch :: struct {
+	scissor:         vk.Rect2D,
+	index_offset:    int,
+	num_instances:   int,
+	projection_type: Projection_Type,
+}
+
+Projection_Type :: enum {
+	World, // Default
+	Screen,
 }
 
 init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
@@ -335,15 +351,56 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
 	fctx := &r.frame_contexts[r.frame_index]
 
+	// create the projection * view matrix for the world w/ camera
 	center_x, center_y := f32(r.window.width) * 0.5, f32(r.window.height) * 0.5
 	view := linalg.matrix4_translate([3]f32{center_x, center_y, 0})
 	view *= linalg.matrix4_scale([3]f32{camera_zoom, camera_zoom, 1})
 	view *= linalg.matrix4_translate([3]f32{-camera_position.x, -camera_position.y, 0})
+	world_projection_view := r.window.projection * view
 
-	fctx.shader_data.projection_view = r.window.projection * view
-	fctx.num_sprites = 0
+	fctx.world_projection_view = world_projection_view
+	fctx.screen_projection_view = r.window.projection // screen space just uses view identity so no need to mult
+	fctx.total_instances = 0
+	clear(&fctx.draw_batches)
+	append(
+		&fctx.draw_batches,
+		Draw_Batch {
+			scissor = vk.Rect2D {
+				offset = {0, 0},
+				extent = {width = u32(r.window.width), height = u32(r.window.height)},
+			},
+		},
+	)
 
 	return fctx
+}
+
+begin_screen_mode :: proc(r: ^Renderer) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.projection_type = .Screen
+	// set scissor to create a new draw batch
+	old_scissor := fctx.draw_batches[len(fctx.draw_batches) - 1].scissor
+	set_scissor(
+		r,
+		old_scissor.offset.x,
+		old_scissor.offset.y,
+		old_scissor.extent.width,
+		old_scissor.extent.height,
+	)
+}
+
+end_screen_mode :: proc(r: ^Renderer) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.projection_type = .World
+	// set scissor to create a new draw batch
+	old_scissor := fctx.draw_batches[len(fctx.draw_batches) - 1].scissor
+	set_scissor(
+		r,
+		old_scissor.offset.x,
+		old_scissor.offset.y,
+		old_scissor.extent.width,
+		old_scissor.extent.height,
+	)
 }
 
 present :: proc(r: ^Renderer) {
@@ -429,10 +486,6 @@ present :: proc(r: ^Renderer) {
 		height = -f32(r.window.height),
 	}
 	vk.CmdSetViewport(cb, 0, 1, &vp)
-	scissor := vk.Rect2D {
-		extent = {width = u32(r.window.width), height = u32(r.window.height)},
-	}
-	vk.CmdSetScissor(cb, 0, 1, &scissor)
 	vk.CmdBindPipeline(cb, .GRAPHICS, r.pipeline)
 	vk.CmdBindDescriptorSets(
 		cb,
@@ -446,19 +499,32 @@ present :: proc(r: ^Renderer) {
 	)
 
 	vk.CmdBindIndexBuffer(cb, r.resources.index_buffer, 0, .UINT32)
-	push_constants := Quad_Push_Constants {
-		data = fctx.shader_data_buffer.device_addr,
+	for &batch in fctx.draw_batches {
+		if batch.num_instances <= 0 do continue
+
+		projection_view: Mat4f
+		switch batch.projection_type {
+		case .World:
+			projection_view = fctx.world_projection_view
+		case .Screen:
+			projection_view = fctx.screen_projection_view
+		}
+		push_constants := Quad_Push_Constants {
+			data            = fctx.shader_data_buffer.device_addr,
+			projection_view = projection_view,
+		}
+		vk.CmdPushConstants(
+			cb,
+			r.pipeline_layout,
+			{.VERTEX, .FRAGMENT},
+			0,
+			size_of(Quad_Push_Constants),
+			&push_constants,
+		)
+		vk.CmdSetScissor(cb, 0, 1, &batch.scissor)
+		batch_indices_to_draw := batch.num_instances * 6
+		vk.CmdDrawIndexed(cb, u32(batch_indices_to_draw), 1, u32(batch.index_offset * 6), 0, 0)
 	}
-	vk.CmdPushConstants(
-		cb,
-		r.pipeline_layout,
-		{.VERTEX, .FRAGMENT},
-		0,
-		size_of(Quad_Push_Constants),
-		&push_constants,
-	)
-	total_indices_to_draw := fctx.num_sprites * 6
-	vk.CmdDrawIndexed(cb, u32(total_indices_to_draw), 1, 0, 0, 0)
 
 	vk.CmdEndRendering(cb)
 	barrier_present := vk.ImageMemoryBarrier2 {
@@ -805,6 +871,13 @@ gpu_destroy :: proc(gctx: ^GPU_Context) {
 	vk.DestroyInstance(gctx.instance, nil)
 }
 
+_append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.shader_data.instances[fctx.total_instances] = instance
+	fctx.total_instances += 1
+	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
+}
+
 draw_sprite :: proc(
 	r: ^Renderer,
 	sh: Sprite_Handle,
@@ -813,61 +886,107 @@ draw_sprite :: proc(
 	scale := [2]f32{1, 1},
 	color := Color{},
 ) {
-	fctx := &r.frame_contexts[r.frame_index]
 	sprite := r.resources.sprites[sh.idx]
 	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
-	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos           = position,
-		scale         = pixel_scale,
-		rotation      = rotation,
-		texture_index = u32(sprite.texture.idx),
-		color_tint    = color_to_f32(color),
-		type          = {u16(Quad_Instance_Type.Sprite), 0},
-	}
-	fctx.num_sprites += 1
+	_append_instance(
+		r,
+		Quad_Instance {
+			pos = position,
+			scale = pixel_scale,
+			rotation = rotation,
+			texture_index = u32(sprite.texture.idx),
+			color = color_to_f32(color),
+			type = u32(Quad_Instance_Type.Sprite),
+		},
+	)
 }
 
 draw_rect :: proc(
 	r: ^Renderer,
 	position: [2]f32,
-	color: Color,
 	width, height: f32,
+	color: Color,
 	rotation: f32 = 0,
 ) {
-	fctx := &r.frame_contexts[r.frame_index]
-	// TODO load a default "unknown texture" into textures slot 0
-	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos        = position,
-		scale      = {width, height},
-		rotation   = rotation,
-		color_tint = color_to_f32(color),
-		type       = {u16(Quad_Instance_Type.Rect), 0},
-	}
-	fctx.num_sprites += 1
+	_append_instance(
+		r,
+		Quad_Instance {
+			pos = position,
+			scale = {width, height},
+			rotation = rotation,
+			color = color_to_f32(color),
+			type = u32(Quad_Instance_Type.Rect),
+		},
+	)
 }
 
-draw_circle :: proc(r: ^Renderer, position: [2]f32, color: Color, radius: f32) {
-	fctx := &r.frame_contexts[r.frame_index]
-	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos        = position,
-		scale      = {radius, radius},
-		color_tint = color_to_f32(color),
-		type       = {u16(Quad_Instance_Type.Circle), 0},
+draw_line :: proc(
+	r: ^Renderer,
+	p0: [2]f32,
+	p1: [2]f32,
+	thickness: int,
+	color: Color,
+	rounded := false,
+) {
+	if thickness <= 0 do return
+
+	center_pos := (p0 + p1) * 0.5
+	width := linalg.distance(p0, p1)
+	height := f32(thickness)
+	diff := p1 - p0
+	rot := linalg.atan2(diff.y, diff.x)
+
+	draw_rect(r, center_pos, width, height, color, rot)
+
+	if rounded {
+		draw_circle(r, p0, height, color)
+		draw_circle(r, p1, height, color)
 	}
-	fctx.num_sprites += 1
+}
+
+draw_circle :: proc(r: ^Renderer, position: [2]f32, radius: f32, color: Color) {
+	_append_instance(
+		r,
+		Quad_Instance {
+			pos = position,
+			scale = {radius, radius},
+			color = color_to_f32(color),
+			type = u32(Quad_Instance_Type.Circle),
+		},
+	)
 }
 
 draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
+	_append_instance(
+		r,
+		Quad_Instance {
+			pos = p1,
+			scale = p2,
+			rotation = p3.x,
+			_pad0 = transmute(u32)p3.y,
+			color = color_to_f32(color),
+			type = u32(Quad_Instance_Type.Triangle),
+		},
+	)
+}
+
+// Set the scissor/clip in SCREEN SPACE
+set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 	fctx := &r.frame_contexts[r.frame_index]
-	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos        = p1,
-		scale      = p2,
-		rotation   = p3.x,
-		_pad0      = transmute(u32)p3.y,
-		color_tint = color_to_f32(color),
-		type       = {u16(Quad_Instance_Type.Triangle), 0},
-	}
-	fctx.num_sprites += 1
+	append(
+		&fctx.draw_batches,
+		Draw_Batch {
+			index_offset = fctx.total_instances,
+			scissor = vk.Rect2D{offset = {x, y}, extent = {width = width, height = height}},
+			num_instances = 0,
+			projection_type = fctx.projection_type,
+		},
+	)
+}
+
+// Reset the scissor/clip back to the full window
+clear_scissor :: proc(r: ^Renderer) {
+	set_scissor(r, 0, 0, u32(r.window.width), u32(r.window.height))
 }
 
 Texture :: struct {

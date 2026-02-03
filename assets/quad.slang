@@ -6,9 +6,9 @@ struct Instance {
   float2 scale;
   float rotation;
   uint32_t texture_index;
-  vector<uint16_t, 2> type;
+  uint32_t type;
   uint32_t _pad0;
-  float4 color_tint;
+  float4 color;
 
   // When type is Instance_Type.Triangle we need to smuggle the three points
   // inside other quad instance fields to preserve a single shader & pipeline
@@ -21,17 +21,15 @@ struct Instance {
   property float2 p2 {
     get { return float2(rotation, asfloat(_pad0)); }
   }
-
-  Instance_Type getType() { return Instance_Type(type[0]); }
-  uint16_t getTypeArg() { return type[1]; }
 };
 
 // Remember to update shader_types_gen since it can't get enums automatically
-enum Instance_Type : uint16_t {
+enum Instance_Type : uint32_t {
   Sprite = 0,
   Rect = 1,
   Circle = 2,
   Triangle = 3,
+  Line = 4,
 }
 
 struct VertexOutput {
@@ -44,11 +42,11 @@ struct VertexOutput {
 const static uint MAX_INSTANCES = 100 * 1024;
 
 struct Shader_Data {
-  column_major float4x4 projection_view; // combined once on CPU
   Instance instances[MAX_INSTANCES];
 };
 
 struct Push_Constants {
+  column_major float4x4 projection_view; // combined once on CPU
   Shader_Data *data;
 };
 
@@ -61,7 +59,7 @@ Push_Constants pc;
 // This is using a vertex-pulling strategy using a structured buffer where
 // each sprite has one entry. Then we use the SV_VertexID and indexed drawing
 // to expand each sprite into 4 vertices. The div and modulo below converts
-// the indexed vertex ID to the single sprite index.
+// the vertex ID to find the instance data.
 [shader("vertex")]
 VertexOutput vertMain(uint vID: SV_VertexID) {
   VertexOutput output;
@@ -73,25 +71,24 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
   float2 finalWorldPos;
   float2 finalUV;
 
-  if (instance.getType() == Instance_Type::Triangle) {
+  // Special case for triangles to make them a degenerate quad with a duplicate
+  // point
+  if (instance.type == Instance_Type.Triangle) {
     float2 p0 = instance.pos;
     float2 p1 = instance.scale;
     float2 p2 = float2(instance.rotation, asfloat(instance._pad0));
-
     float2 triPoints[4] = { p0, p1, p2, p0 };
-    float2 triUVs[4] = { float2(0.5, 0.0), float2(1.0, 1.0), float2(0.0, 1.0),
-                         float2(0.5, 0.0) };
-
+    // float2 triUVs[4] = { float2(0.5, 0.0), float2(1.0, 1.0),
+    // float2(0.0, 1.0),
+    //                      float2(0.5, 0.0) };
     finalWorldPos = triPoints[cornerIndex];
-    finalUV = triUVs[cornerIndex];
+    // finalUV = triUVs[cornerIndex];
   } else {
-    // Standard Quad Logic
     float2 quadCorners[4] = { float2(-0.5, -0.5), float2(0.5, -0.5),
                               float2(0.5, 0.5), float2(-0.5, 0.5) };
-    float2 quadUVs[4] = { float2(0, 1), float2(1, 1), float2(1, 0),
-                          float2(0, 0) };
+    float2 quadUVs[4] = { float2(0, 0), float2(1, 0), float2(1, 1),
+                          float2(0, 1) };
     float2 localPos = quadCorners[cornerIndex] * instance.scale;
-
     float s, c;
     sincos(instance.rotation, s, c);
     float2 rotated = float2(localPos.x * c - localPos.y * s,
@@ -100,7 +97,7 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
     finalUV = quadUVs[cornerIndex];
   }
 
-  output.pos = mul(pc.data->projection_view, float4(finalWorldPos, 0.0, 1.0));
+  output.pos = mul(pc.projection_view, float4(finalWorldPos, 0.0, 1.0));
   output.uv = finalUV;
   output.texture_index = instance.texture_index;
   output.instance_index = instanceIndex;
@@ -111,16 +108,16 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 [shader("fragment")]
 float4 fragMain(VertexOutput input) {
   Instance instance = pc.data->instances[input.instance_index];
-  Instance_Type instance_type = instance.getType();
+  Instance_Type instance_type = Instance_Type(instance.type);
   if (instance_type == Instance_Type.Sprite) {
-    return textures[input.texture_index].Sample(input.uv);
+    float4 texColor = textures[input.texture_index].Sample(input.uv);
+    return texColor * instance.color;
   } else if (instance_type == Instance_Type.Circle) {
     float d = distance(input.uv, float2(0.5, 0.5));
     float alpha = 1.0 - smoothstep(0.48, 0.5, d);
     if (alpha <= 0.0)
       discard;
-    return float4(instance.color_tint.rgb, instance.color_tint.a * alpha);
+    return float4(instance.color.rgb, instance.color.a * alpha);
   }
-  // applies to Instance_Type.Rect
-  return instance.color_tint;
+  return instance.color;
 }
