@@ -61,17 +61,14 @@ main :: proc() {
 		last_frame_time = frame_start_time
 
 		glfw.PollEvents()
-		// Zoom with mouse wheel
-		if scroll_offset != {} {
-			cam_zoom += f32(scroll_offset.y) * 0.025 * dt
-		}
 
 		// Draw!
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 		instance_pos := [2]f32{0, 0}
 		re.draw_sprite(&renderer, grass_sprite, instance_pos)
-		re.draw_rect(&renderer, {-50, -50}, {255, 0, 0, 255}, 50, 50)
-		re.draw_circle(&renderer, {50, 50}, {0, 255, 0, 255}, 50)
+		re.draw_rect(&renderer, {-50, -50}, re.Color{255, 0, 0, 255}, 50, 50)
+		re.draw_circle(&renderer, {50, 50}, re.Color{0, 255, 0, 255}, 50)
+		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
 		re.present(&renderer)
 	}
 }

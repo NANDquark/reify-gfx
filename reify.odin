@@ -821,7 +821,7 @@ draw_sprite :: proc(
 		scale         = pixel_scale,
 		rotation      = rotation,
 		texture_index = u32(sprite.texture.idx),
-		color         = color_to_f32(color),
+		color_tint    = color_to_f32(color),
 		type          = {u16(Quad_Instance_Type.Sprite), 0},
 	}
 	fctx.num_sprites += 1
@@ -837,11 +837,11 @@ draw_rect :: proc(
 	fctx := &r.frame_contexts[r.frame_index]
 	// TODO load a default "unknown texture" into textures slot 0
 	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos      = position,
-		scale    = {width, height},
-		rotation = rotation,
-		color    = color_to_f32(color),
-		type     = {u16(Quad_Instance_Type.Rect), 0},
+		pos        = position,
+		scale      = {width, height},
+		rotation   = rotation,
+		color_tint = color_to_f32(color),
+		type       = {u16(Quad_Instance_Type.Rect), 0},
 	}
 	fctx.num_sprites += 1
 }
@@ -849,10 +849,23 @@ draw_rect :: proc(
 draw_circle :: proc(r: ^Renderer, position: [2]f32, color: Color, radius: f32) {
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
-		pos   = position,
-		scale = {radius, radius},
-		color = color_to_f32(color),
-		type  = {u16(Quad_Instance_Type.Circle), 0},
+		pos        = position,
+		scale      = {radius, radius},
+		color_tint = color_to_f32(color),
+		type       = {u16(Quad_Instance_Type.Circle), 0},
+	}
+	fctx.num_sprites += 1
+}
+
+draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.shader_data.instances[fctx.num_sprites] = Quad_Instance {
+		pos        = p1,
+		scale      = p2,
+		rotation   = p3.x,
+		_pad0      = transmute(u32)p3.y,
+		color_tint = color_to_f32(color),
+		type       = {u16(Quad_Instance_Type.Triangle), 0},
 	}
 	fctx.num_sprites += 1
 }

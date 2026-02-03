@@ -65,7 +65,7 @@ run :: proc() -> Error {
 				{
 					name = "Instance_Type",
 					type = Scalar_Type_UINT8,
-					values = {{"Sprite", 0}, {"Rect", 1}, {"Circle", 2}},
+					values = {{"Sprite", 0}, {"Rect", 1}, {"Circle", 2}, {"Triangle", 3}},
 				},
 			},
 			prefix = "Quad_",

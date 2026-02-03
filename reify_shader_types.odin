@@ -1,19 +1,18 @@
 package reify
 
-// Generated: 2026-02-02 06:19:04.684696124 +0000 UTC
+// Generated: 2026-02-03 00:25:44.371663911 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
 
-QUAD_MAX__PAD0 :: 1
 Quad_Instance :: struct #align (16) {
     pos: [2]f32,
     scale: [2]f32,
     rotation: f32,
     texture_index: u32,
     type: [2]u16,
-    _pad0: [QUAD_MAX__PAD0]u32,
-    color: [4]f32,
+    _pad0: u32,
+    color_tint: [4]f32,
 }
 
 QUAD_MAX_INSTANCES :: 102400
@@ -30,5 +29,6 @@ Quad_Instance_Type :: enum u8 {
 	Sprite = 0,
 	Rect = 1,
 	Circle = 2,
+	Triangle = 3,
 }
 
