@@ -66,11 +66,11 @@ main :: proc() {
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
-		re.draw_sprite(&renderer, tree_sprite, {0, 0}, color = re.Color{255, 0, 0, 128}) // tint it red and half-transparent for fun
+		re.draw_sprite(&renderer, tree_sprite, {0, 0}, alpha = 0.5, rgb_tint = {255, 0, 0})
 		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
-		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 255})
 		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
 		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
+		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
 
 		// batch 2 - draw on the screen, not the world!
 		re.begin_screen_mode(&renderer)

@@ -8,7 +8,7 @@ struct Instance {
   uint32_t texture_index;
   uint32_t type;
   uint32_t _pad0;
-  float4 color;
+  float4 color; // pre-multiplied alpha
 
   // When type is Instance_Type.Triangle we need to smuggle the three points
   // inside other quad instance fields to preserve a single shader & pipeline
@@ -105,15 +105,17 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 float4 fragMain(VertexOutput input) {
   Instance instance = pc.data->instances[input.instance_index];
   Instance_Type instance_type = Instance_Type(instance.type);
+
   if (instance_type == Instance_Type.Sprite) {
     float4 texColor = textures[input.texture_index].Sample(input.uv);
     return texColor * instance.color;
-  } else if (instance_type == Instance_Type.Circle) {
-    float d = distance(input.uv, float2(0.5, 0.5));
-    float alpha = 1.0 - smoothstep(0.48, 0.5, d);
-    if (alpha <= 0.0)
-      discard;
-    return float4(instance.color.rgb, instance.color.a * alpha);
   }
+
+  if (instance_type == Instance_Type.Circle) {
+    float d = distance(input.uv, float2(0.5, 0.5));
+    float mask = 1.0 - smoothstep(0.48, 0.5, d);
+    return instance.color * mask;
+  }
+
   return instance.color;
 }

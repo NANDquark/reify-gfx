@@ -229,8 +229,10 @@ vk_pipeline_init :: proc(
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
 		colorWriteMask      = {.R, .G, .B, .A},
 		blendEnable         = true,
-		srcColorBlendFactor = .SRC_ALPHA,
+		srcColorBlendFactor = .ONE,
 		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
+		srcAlphaBlendFactor = .ONE,
+		dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA,
 		colorBlendOp        = .ADD,
 	}
 	color_blend_state := vk.PipelineColorBlendStateCreateInfo {

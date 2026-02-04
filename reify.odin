@@ -2,6 +2,7 @@ package reify
 
 import "base:runtime"
 import "core:fmt"
+import "core:math"
 import "core:math/linalg"
 import "core:mem"
 import "lib/vma"
@@ -883,10 +884,13 @@ draw_sprite :: proc(
 	position: [2]f32,
 	rotation: f32 = 0,
 	scale := [2]f32{1, 1},
-	color := Color{},
+	rgb_tint := [3]u8{255, 255, 255},
+	alpha: f32 = 1,
+	is_additive := false,
 ) {
 	sprite := r.resources.sprites[sh.idx]
 	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
+	color := Color{rgb_tint.r, rgb_tint.b, rgb_tint.g, u8(alpha * 255 + 0.5)}
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -894,7 +898,7 @@ draw_sprite :: proc(
 			scale = pixel_scale,
 			rotation = rotation,
 			texture_index = u32(sprite.texture.idx),
-			color = color_to_f32(color),
+			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Sprite),
 		},
 	)
@@ -906,6 +910,7 @@ draw_rect :: proc(
 	width, height: f32,
 	color: Color,
 	rotation: f32 = 0,
+	is_additive := false,
 ) {
 	_append_instance(
 		r,
@@ -913,7 +918,7 @@ draw_rect :: proc(
 			pos = position,
 			scale = {width, height},
 			rotation = rotation,
-			color = color_to_f32(color),
+			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Rect),
 		},
 	)
@@ -926,6 +931,7 @@ draw_line :: proc(
 	thickness: int,
 	color: Color,
 	rounded := false,
+	is_additive := false,
 ) {
 	if thickness <= 0 do return
 
@@ -935,27 +941,33 @@ draw_line :: proc(
 	diff := p1 - p0
 	rot := linalg.atan2(diff.y, diff.x)
 
-	draw_rect(r, center_pos, width, height, color, rot)
+	draw_rect(r, center_pos, width, height, color, rot, is_additive)
 
 	if rounded {
-		draw_circle(r, p0, height, color)
-		draw_circle(r, p1, height, color)
+		draw_circle(r, p0, height, color, is_additive)
+		draw_circle(r, p1, height, color, is_additive)
 	}
 }
 
-draw_circle :: proc(r: ^Renderer, position: [2]f32, radius: f32, color: Color) {
+draw_circle :: proc(
+	r: ^Renderer,
+	position: [2]f32,
+	radius: f32,
+	color: Color,
+	is_additive := false,
+) {
 	_append_instance(
 		r,
 		Quad_Instance {
 			pos = position,
 			scale = {radius, radius},
-			color = color_to_f32(color),
+			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Circle),
 		},
 	)
 }
 
-draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
+draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additive := false) {
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -963,7 +975,7 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
 			scale = p2,
 			rotation = p3.x,
 			_pad0 = transmute(u32)p3.y,
-			color = color_to_f32(color),
+			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Triangle),
 		},
 	)
@@ -1001,13 +1013,21 @@ Texture_Handle :: struct {
 
 Color :: [4]u8
 
-color_to_f32 :: proc(color: Color) -> [4]f32 {
-	return [4]f32 {
-		f32(color[0]) / 255.0,
-		f32(color[1]) / 255.0,
-		f32(color[2]) / 255.0,
-		f32(color[3]) / 255.0,
+convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
+	fcolor := [4]f32 {
+		f32(color.r) / 255.0,
+		f32(color.g) / 255.0,
+		f32(color.b) / 255.0,
+		f32(color.a) / 255.0,
 	}
+	if is_additive {
+		fcolor.a = 0
+	} else {
+		fcolor.r *= fcolor.a
+		fcolor.g *= fcolor.a
+		fcolor.b *= fcolor.a
+	}
+	return fcolor
 }
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
@@ -1028,6 +1048,25 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 	)
 	data_size := len(pixels) * size_of(Color)
 	mem.copy(tex_staging_buffer_ptr, raw_data(pixels), data_size)
+	// apply pre-multiplied alpha with gamma correction
+	staged_pixels := ([^]Color)(tex_staging_buffer_ptr)[:len(pixels)]
+	for &p in staged_pixels {
+		a := f32(p.a) / 255.0
+		if a == 1 do continue
+		if a == 0 {
+			p.r, p.g, p.b = 0, 0, 0
+			continue
+		}
+
+		srgb_color := [3]f32{f32(p.r) / 255, f32(p.g) / 255, f32(p.b) / 255}
+		linear_color := linalg.vector3_srgb_to_linear(srgb_color)
+		linear_color *= a // pre-multiply alpha properly in linear space
+		srgb_color = linalg.vector3_linear_to_srgb(linear_color)
+
+		p.r = u8(srgb_color.r * 255 + 0.5)
+		p.g = u8(srgb_color.g * 255 + 0.5)
+		p.b = u8(srgb_color.b * 255 + 0.5)
+	}
 	vma.flush_allocation(
 		r.gpu.allocator,
 		r.resources.tex_staging_alloc,
