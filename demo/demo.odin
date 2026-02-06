@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:image"
 import "core:image/png"
 import "core:log"
+import "core:math"
 import "core:slice"
 import "core:time"
 import "vendor:glfw"
@@ -49,8 +50,8 @@ main :: proc() {
 	tree_tex := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
 	tree_sprite := re.sprite_create(&renderer, tree_tex, 16, 16)
 
-	cam_pos := [2]f32{120, 120}
-	cam_zoom: f32 = 1
+	cam_pos := [2]f32{0, 0}
+	cam_zoom: f32 = 3
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -66,7 +67,18 @@ main :: proc() {
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
-		re.draw_sprite(&renderer, tree_sprite, {0, 0}, alpha = 0.5, rgb_tint = {255, 0, 0})
+		re.draw_sprite(&renderer, tree_sprite, {0, 0})
+		pulse := f32(math.sin(glfw.GetTime() * 2.0) + 1.0) * 0.5
+		// little fake glow effect
+		re.draw_sprite(
+			&renderer,
+			tree_sprite,
+			{0, -2},
+			scale = {1 + pulse * 0.25, 1 + pulse * 0.25},
+			alpha = pulse,
+			rgb_tint = {100, 200, 255},
+			is_additive = true,
+		)
 		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
 		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
 		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})

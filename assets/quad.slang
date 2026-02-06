@@ -103,6 +103,7 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 
 [shader("fragment")]
 float4 fragMain(VertexOutput input) {
+  // using pre-multiplied alpha so additive effects use the same pipeline
   Instance instance = pc.data->instances[input.instance_index];
   Instance_Type instance_type = Instance_Type(instance.type);
 

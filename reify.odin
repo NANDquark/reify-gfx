@@ -1014,20 +1014,21 @@ Texture_Handle :: struct {
 Color :: [4]u8
 
 convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
-	fcolor := [4]f32 {
-		f32(color.r) / 255.0,
-		f32(color.g) / 255.0,
-		f32(color.b) / 255.0,
-		f32(color.a) / 255.0,
-	}
+	r := f32(color.r) / 255.0
+	g := f32(color.g) / 255.0
+	b := f32(color.b) / 255.0
+	a := f32(color.a) / 255.0
+
+	// pre-multiply alpha
+	r *= a
+	g *= a
+	b *= a
+
 	if is_additive {
-		fcolor.a = 0
+		return {r, g, b, 0}
 	} else {
-		fcolor.r *= fcolor.a
-		fcolor.g *= fcolor.a
-		fcolor.b *= fcolor.a
+		return {r, g, b, a}
 	}
-	return fcolor
 }
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
