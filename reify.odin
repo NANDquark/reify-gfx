@@ -878,6 +878,10 @@ _append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
 	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
 }
 
+Rect :: struct {
+	x, y, w, h: f32,
+}
+
 draw_sprite :: proc(
 	r: ^Renderer,
 	sh: Sprite_Handle,
@@ -886,6 +890,7 @@ draw_sprite :: proc(
 	scale := [2]f32{1, 1},
 	rgb_tint := [3]u8{255, 255, 255},
 	alpha: f32 = 1,
+	uv_rect := Rect{x = 0, y = 0, w = 1, h = 1},
 	is_additive := false,
 ) {
 	sprite := r.resources.sprites[sh.idx]
@@ -900,6 +905,7 @@ draw_sprite :: proc(
 			texture_index = u32(sprite.texture.idx),
 			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Sprite),
+			uv_rect = {uv_rect.x, uv_rect.y, uv_rect.w, uv_rect.h},
 		},
 	)
 }
@@ -920,6 +926,7 @@ draw_rect :: proc(
 			rotation = rotation,
 			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Rect),
+			uv_rect = {0, 0, 1, 1},
 		},
 	)
 }
@@ -963,6 +970,7 @@ draw_circle :: proc(
 			scale = {radius, radius},
 			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Circle),
+			uv_rect = {0, 0, 1, 1},
 		},
 	)
 }
@@ -977,6 +985,7 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additiv
 			_pad0 = transmute(u32)p3.y,
 			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Triangle),
+			uv_rect = {0, 0, 1, 1},
 		},
 	)
 }

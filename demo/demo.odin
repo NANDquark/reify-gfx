@@ -50,8 +50,27 @@ main :: proc() {
 	tree_tex := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
 	tree_sprite := re.sprite_create(&renderer, tree_tex, 16, 16)
 
-	cam_pos := [2]f32{0, 0}
-	cam_zoom: f32 = 3
+	tilemap_img := load_tilemap()
+	defer image.destroy(tilemap_img)
+	tilemap_pixels := slice.reinterpret([]re.Color, tilemap_img.pixels.buf[:])
+	tilemap_tex := re.texture_load(
+		&renderer,
+		tilemap_pixels,
+		tilemap_img.width,
+		tilemap_img.height,
+	)
+	tilemap_sprite := re.sprite_create(&renderer, tilemap_tex, 16, 16)
+	// px 85, 34, 16, 16
+	// {85, 34}, {101, 34}, {101, 50}, {85, 50}
+	mushroom_uv_rect := re.Rect {
+		x = f32(85) / f32(tilemap_img.width),
+		y = f32(34) / f32(tilemap_img.height),
+		w = f32(16) / f32(tilemap_img.width),
+		h = f32(16) / f32(tilemap_img.height),
+	}
+
+	cam_pos := [2]f32{100, 100}
+	cam_zoom: f32 = 2
 	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
@@ -83,6 +102,7 @@ main :: proc() {
 		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
 		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
 		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
+		re.draw_sprite(&renderer, tilemap_sprite, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
 
 		// batch 2 - draw on the screen, not the world!
 		re.begin_screen_mode(&renderer)
@@ -113,6 +133,15 @@ tree_TILE_BYTES :: #load("../assets/sprites/kenney_tiny-town/Tiles/tile_0003.png
 load_tile_img :: proc() -> ^image.Image {
 	img, err := png.load_from_bytes(tree_TILE_BYTES)
 	assert(err == nil, fmt.tprintf("failed to load tree, err=%v", err))
+	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
+	return img
+}
+
+TILEMAP_BYTES :: #load("../assets/sprites/kenney_tiny-town/tilemap.png")
+
+load_tilemap :: proc() -> ^image.Image {
+	img, err := png.load_from_bytes(TILEMAP_BYTES)
+	assert(err == nil, fmt.tprintf("failed to load tilemap", err))
 	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
 	return img
 }

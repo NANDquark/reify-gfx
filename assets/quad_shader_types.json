@@ -107,12 +107,24 @@
                                                 }
                                             },
                                             "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 4}
+                                        },
+                                        {
+                                            "name": "uv_rect",
+                                            "type": {
+                                                "kind": "vector",
+                                                "elementCount": 4,
+                                                "elementType": {
+                                                    "kind": "scalar",
+                                                    "scalarType": "float32"
+                                                }
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 48, "size": 16, "elementStride": 4}
                                         }
                                     ]
                                 },
-                                "uniformStride": 48
+                                "uniformStride": 64
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 4915200, "elementStride": 48}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 6553600, "elementStride": 64}
                         }
                     ]
                 }

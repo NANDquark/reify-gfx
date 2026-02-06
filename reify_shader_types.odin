@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-02-04 04:47:58.732143674 +0000 UTC
+// Generated: 2026-02-06 03:52:41.591048869 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
@@ -13,6 +13,7 @@ Quad_Instance :: struct #align (16) {
     type: u32,
     _pad0: u32,
     color: [4]f32,
+    uv_rect: [4]f32,
 }
 
 QUAD_MAX_INSTANCES :: 102400

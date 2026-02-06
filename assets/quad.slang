@@ -9,6 +9,7 @@ struct Instance {
   uint32_t type;
   uint32_t _pad0;
   float4 color; // pre-multiplied alpha
+  float4 uv_rect;
 
   // When type is Instance_Type.Triangle we need to smuggle the three points
   // inside other quad instance fields to preserve a single shader & pipeline
@@ -82,8 +83,13 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
   } else {
     float2 quadCorners[4] = { float2(-0.5, -0.5), float2(0.5, -0.5),
                               float2(0.5, 0.5), float2(-0.5, 0.5) };
-    float2 quadUVs[4] = { float2(0, 0), float2(1, 0), float2(1, 1),
-                          float2(0, 1) };
+    float uv_x = instance.uv_rect.x;
+    float uv_y = instance.uv_rect.y;
+    float uv_w = instance.uv_rect[2];
+    float uv_h = instance.uv_rect[3];
+    float2 quadUVs[4] = { float2(uv_x, uv_y), float2(uv_x + uv_w, uv_y),
+                          float2(uv_x + uv_w, uv_y + uv_h),
+                          float2(uv_x, uv_y + uv_h) };
     float2 localPos = quadCorners[cornerIndex] * instance.scale;
     float s, c;
     sincos(instance.rotation, s, c);
