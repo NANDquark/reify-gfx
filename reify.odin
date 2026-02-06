@@ -418,6 +418,7 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 	return fctx
 }
 
+// Subsequent draw calls will use a screen-space projection matrix until `end_screen_mode` is called.
 begin_screen_mode :: proc(r: ^Renderer) {
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.projection_type = .Screen
@@ -432,8 +433,11 @@ begin_screen_mode :: proc(r: ^Renderer) {
 	)
 }
 
+// Sets the projection back to using the world projection and camera view matrixes
 end_screen_mode :: proc(r: ^Renderer) {
 	fctx := &r.frame_contexts[r.frame_index]
+	if fctx.projection_type == .World do return
+
 	fctx.projection_type = .World
 	// set scissor to create a new draw batch
 	old_scissor := fctx.draw_batches[len(fctx.draw_batches) - 1].scissor
