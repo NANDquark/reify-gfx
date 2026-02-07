@@ -3,11 +3,13 @@ package demo
 import re ".."
 import "base:runtime"
 import "core:c"
+import "core:encoding/json"
 import "core:fmt"
 import "core:image"
 import "core:image/png"
 import "core:log"
 import "core:math"
+import "core:mem"
 import "core:slice"
 import "core:time"
 import "vendor:glfw"
@@ -44,6 +46,7 @@ main :: proc() {
 	window_width, window_height := glfw.GetWindowSize(window)
 	re.init(&renderer, window)
 
+	// ASSET LOADING
 	tree_img := load_tile_img()
 	defer image.destroy(tree_img)
 	tree_pixels := slice.reinterpret([]re.Color, tree_img.pixels.buf[:])
@@ -60,8 +63,6 @@ main :: proc() {
 		tilemap_img.height,
 	)
 	tilemap_sprite := re.sprite_create(&renderer, tilemap_tex, 16, 16)
-	// px 85, 34, 16, 16
-	// {85, 34}, {101, 34}, {101, 50}, {85, 50}
 	mushroom_uv_rect := re.Rect {
 		x = f32(85) / f32(tilemap_img.width),
 		y = f32(34) / f32(tilemap_img.height),
@@ -69,6 +70,24 @@ main :: proc() {
 		h = f32(16) / f32(tilemap_img.height),
 	}
 
+	font_atlas_arena: mem.Dynamic_Arena
+	font_atlas_img, font_atlas_definition := load_font(&font_atlas_arena)
+	defer mem.dynamic_arena_destroy(&font_atlas_arena)
+	font_atlas_pixels := slice.reinterpret([]re.Color, font_atlas_img.pixels.buf[:])
+	font_atlas_tex := re.texture_load(
+		&renderer,
+		font_atlas_pixels,
+		font_atlas_img.width,
+		font_atlas_img.height,
+	)
+	font_atlas_sprite := re.sprite_create(
+		&renderer,
+		font_atlas_tex,
+		f32(font_atlas_img.width),
+		f32(font_atlas_img.height),
+	)
+
+	// MAIN LOOP
 	cam_pos := [2]f32{100, 100}
 	cam_zoom: f32 = 2
 	last_mouse_pos: [2]f64
@@ -144,4 +163,21 @@ load_tilemap :: proc() -> ^image.Image {
 	assert(err == nil, fmt.tprintf("failed to load tilemap", err))
 	assert(img.channels == 4 && img.depth == 8, "RGBA8 is the only supported format so far")
 	return img
+}
+
+FONT_ATLAS_JSON_BYTES :: #load("../assets/fonts/noto-sans-latin-400-normal-msdf.json")
+FONT_ATLAS_IMG_BYTES :: #load("../assets/fonts/noto-sans-latin-400-normal.png")
+
+load_font :: proc(arena: ^mem.Dynamic_Arena) -> (^image.Image, ^re.Font_Atlas) {
+	mem.dynamic_arena_init(arena)
+	font_atlas_allocator := mem.dynamic_arena_allocator(arena)
+	img, font_atlas, err := re.font_atlas_load(
+		FONT_ATLAS_JSON_BYTES,
+		FONT_ATLAS_IMG_BYTES,
+		font_atlas_allocator,
+	)
+	if err != nil {
+		panic(fmt.tprintf("failed to load font file, erro=%v", err))
+	}
+	return img, font_atlas
 }

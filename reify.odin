@@ -1,8 +1,10 @@
 package reify
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
-import "core:math"
+import "core:image"
+import "core:image/png"
 import "core:math/linalg"
 import "core:mem"
 import "lib/vma"
@@ -1240,4 +1242,105 @@ sprite_create :: proc(r: ^Renderer, t: Texture_Handle, width, height: f32) -> Sp
 	idx := len(r.resources.sprites)
 	append(&r.resources.sprites, s)
 	return Sprite_Handle{idx = idx}
+}
+
+Font_Atlas :: struct {
+	pages:          []string                   `json:"pages"`,
+	chars:          []Font_Atlas_Char          `json:"chars"`,
+	info:           Font_Atlas_Info            `json:"info"`,
+	common:         Font_Atlas_Common          `json:"common"`,
+	distance_field: Font_Atlas_Distance_Field  `json:"distanceField"`,
+	kernings:       []Font_Atlas_Kerning       `json:"kernings"`,
+}
+
+Font_Atlas_Info :: struct {
+	face:      string   `json:"face"`,
+	size:      int      `json:"size"`,
+	bold:      int      `json:"bold"`,
+	italic:    int      `json:"italic"`,
+	charset:   []string `json:"charset"`,
+	unicode:   int      `json:"unicode"`,
+	stretch_h: int      `json:"stretchH"`,
+	smooth:    int      `json:"smooth"`,
+	aa:        int      `json:"aa"`,
+	padding:   [4]int   `json:"padding"`,
+	spacing:   [2]int   `json:"spacing"`,
+}
+
+Font_Atlas_Common :: struct {
+	line_height: int `json:"lineHeight"`,
+	base:        int `json:"base"`,
+	scale_w:     int `json:"scaleW"`,
+	scale_h:     int `json:"scaleH"`,
+	pages:       int `json:"pages"`,
+	packed:      int `json:"packed"`,
+	alpha_chnl:  int `json:"alphaChnl"`,
+	red_chnl:    int `json:"redChnl"`,
+	green_chnl:  int `json:"greenChnl"`,
+	blue_chnl:   int `json:"blueChnl"`,
+}
+
+Font_Atlas_Distance_Field :: struct {
+	field_type:     string `json:"fieldType"`,
+	distance_range: int `json:"distanceRange"`,
+}
+
+Font_Atlas_Char :: struct {
+	id:        int    `json:"id"`,
+	index:     int    `json:"index"`,
+	glyph_char: string `json:"char"`,
+	width:     int    `json:"width"`,
+	height:    int    `json:"height"`,
+	xoffset:   int    `json:"xoffset"`,
+	yoffset:   int    `json:"yoffset"`,
+	xadvance:  int    `json:"xadvance"`,
+	chnl:      int    `json:"chnl"`,
+	x:         int    `json:"x"`,
+	y:         int    `json:"y"`,
+	page:      int    `json:"page"`,
+}
+
+Font_Atlas_Kerning :: struct {
+	first:  int `json:"first"`,
+	second: int `json:"second"`,
+	amount: int `json:"amount"`,
+}
+
+Font_Atlas_Load_Error :: enum {
+	Invalid_Page_Count,
+	Invalid_Dimensions,
+	Empty_Glyphs,
+}
+
+Font_Atlas_Error :: union #shared_nil {
+	json.Unmarshal_Error,
+	image.Error,
+	Font_Atlas_Load_Error,
+}
+
+font_atlas_load :: proc(
+	font_atlas_bytes: []byte,
+	font_atlas_img: []byte,
+	allocator := context.allocator,
+) -> (
+	img: ^image.Image,
+	atlas: ^Font_Atlas,
+	err: Font_Atlas_Error,
+) {
+	context.allocator = allocator
+
+	atlas = new(Font_Atlas)
+	json.unmarshal(font_atlas_bytes, atlas) or_return
+	if len(atlas.pages) != 1 || atlas.common.pages != 1 {
+		return nil, nil, Font_Atlas_Load_Error.Invalid_Page_Count
+	}
+	if atlas.common.scale_w <= 0 || atlas.common.scale_h <= 0 {
+		return nil, nil, Font_Atlas_Load_Error.Invalid_Dimensions
+	}
+	if len(atlas.chars) == 0 {
+		return nil, nil, Font_Atlas_Load_Error.Empty_Glyphs
+	}
+	img, err = image.load_from_bytes(font_atlas_img)
+
+	return
 }

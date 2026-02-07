@@ -1,7 +1,5 @@
 debug*
-*.bin
-*.exe
-*.pdb
 reify
+demo.bin
 *.cap
 .envrc

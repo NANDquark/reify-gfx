@@ -1,3 +1,6 @@
 [submodule "lib/vma"]
 	path = lib/vma
 	url = https://github.com/Capati/odin-vma
+[submodule "lib/msdfgen"]
+	path = lib/msdfgen
+	url = git@github.com:NANDquark/msdf-gen-odin.git
