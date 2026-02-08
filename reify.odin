@@ -4,11 +4,9 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:image"
-import "core:image/png"
 import "core:math/linalg"
 import "core:mem"
 import "core:slice"
-import "core:unicode/utf8"
 import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -19,10 +17,8 @@ IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
 TEX_DESCRIPTOR_POOL_COUNT :: 1024
 
-// TODO: Take in an allocator, store it in Renderer and properly use it to
-// alloc and dealloc internally owned data.
-
 Renderer :: struct {
+	allocator:       mem.Allocator,
 	gpu:             GPU_Context,
 	surface:         vk.SurfaceKHR,
 	window:          struct {
@@ -96,10 +92,18 @@ Projection_Type :: enum {
 	Screen,
 }
 
-init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
+init :: proc(
+	r: ^Renderer,
+	window: glfw.WindowHandle,
+	allocator := context.allocator,
+	temp_allocator := context.temp_allocator,
+) {
+	r.allocator = allocator
+	context.allocator = r.allocator
+	context.temp_allocator = temp_allocator
 	defer free_all(context.temp_allocator)
 
-	gpu_init(&r.gpu)
+	gpu_init(&r.gpu, r.allocator)
 
 	// SETUP SURFACE
 	vk_assert(glfw.CreateWindowSurface(r.gpu.instance, window, nil, &r.surface))
@@ -121,6 +125,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 		surface_caps,
 		r.window.width,
 		r.window.height,
+		allocator = r.allocator,
 	)
 
 	// Setup Index Buffer
@@ -356,6 +361,7 @@ init :: proc(r: ^Renderer, window: glfw.WindowHandle) {
 }
 
 destroy :: proc(r: ^Renderer) {
+	context.allocator = r.allocator
 	vk_assert(vk.DeviceWaitIdle(r.gpu.device))
 
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
@@ -371,13 +377,20 @@ destroy :: proc(r: ^Renderer) {
 		delete(fctx.draw_batches)
 	}
 
-	swapchain_context_destroy(&r.swapchain, r.gpu.device, r.gpu.allocator)
+	swapchain_context_destroy(&r.swapchain, r.gpu.device, allocator = r.allocator)
 
+	// cleanup resources
 	for t in r.resources.textures {
 		vk.DestroyImageView(r.gpu.device, t.view, nil)
 		vma.destroy_image(r.gpu.allocator, t.image, t.alloc)
 		// t.sampler is shared in tex_sampler
 	}
+	delete(r.resources.textures)
+	delete(r.resources.sprites)
+	for &face in r.resources.font_faces {
+		font_face_destroy(&face, r.allocator)
+	}
+	delete(r.resources.font_faces)
 	vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
 	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.tex_desc_set_layout, nil)
 	vk.DestroyDescriptorPool(r.gpu.device, r.resources.tex_desc_pool, nil)
@@ -399,6 +412,8 @@ destroy :: proc(r: ^Renderer) {
 }
 
 start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame_Context {
+	context.allocator = r.allocator
+
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
 	fctx := &r.frame_contexts[r.frame_index]
 
@@ -428,6 +443,8 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 
 // Subsequent draw calls will use a screen-space projection matrix until `end_screen_mode` is called.
 begin_screen_mode :: proc(r: ^Renderer) {
+	context.allocator = r.allocator
+
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.projection_type = .Screen
 	// set scissor to create a new draw batch
@@ -443,6 +460,8 @@ begin_screen_mode :: proc(r: ^Renderer) {
 
 // Sets the projection back to using the world projection and camera view matrixes
 end_screen_mode :: proc(r: ^Renderer) {
+	context.allocator = r.allocator
+
 	fctx := &r.frame_contexts[r.frame_index]
 	if fctx.projection_type == .World do return
 
@@ -459,6 +478,8 @@ end_screen_mode :: proc(r: ^Renderer) {
 }
 
 present :: proc(r: ^Renderer) {
+	context.allocator = r.allocator
+
 	fctx := &r.frame_contexts[r.frame_index]
 
 	vk_assert(vk.WaitForFences(r.gpu.device, 1, &fctx.fence, true, max(u64)))
@@ -642,6 +663,7 @@ present :: proc(r: ^Renderer) {
 			r.window.width,
 			r.window.height,
 			recreate = true,
+			allocator = r.allocator,
 		)
 	}
 }
@@ -656,6 +678,8 @@ Shader_Data_Buffer :: struct {
 Mat4f :: matrix[4, 4]f32
 
 window_resize :: proc(r: ^Renderer, width, height: i32) {
+	context.allocator = r.allocator
+
 	r.window.width = width
 	r.window.height = height
 	r.window.projection = vk_ortho_projection(0, f32(width), 0, f32(height), -1, 1)
@@ -669,7 +693,10 @@ swapchain_context_init :: proc(
 	surface_caps: vk.SurfaceCapabilitiesKHR,
 	window_width, window_height: i32,
 	recreate := false,
+	allocator := context.allocator,
 ) {
+	context.allocator = allocator
+
 	sc.gpu = gpu
 
 	if recreate {
@@ -728,24 +755,33 @@ swapchain_context_init :: proc(
 swapchain_context_destroy :: proc(
 	sc: ^Swapchain_Context,
 	device: vk.Device,
-	allocator: vma.Allocator,
+	allocator := context.allocator,
 ) {
+	context.allocator = allocator
+
+	// The images in sc.images should not be destroyed because they are owned by
+	// the swapchain and are released by vk.DestroySwapchainKHR
+	delete(sc.images)
 	for iv in sc.views {
 		vk.DestroyImageView(device, iv, nil)
 	}
+	delete(sc.views)
 	for s in sc.render_semaphores {
 		vk.DestroySemaphore(device, s, nil)
 	}
+	delete(sc.render_semaphores)
 	vk.DestroySwapchainKHR(device, sc.handle, nil)
 }
 
-gpu_init :: proc(dctx: ^GPU_Context) {
+gpu_init :: proc(dctx: ^GPU_Context, allocator := context.allocator) {
+	context.allocator = allocator
+
 	app_info := &vk.ApplicationInfo {
 		sType = .APPLICATION_INFO,
 		pApplicationName = "Reify",
 		apiVersion = vk.API_VERSION_1_3,
 	}
-	instance_extensions := [dynamic]cstring{}
+	instance_extensions := make([dynamic]cstring, context.temp_allocator)
 	append(&instance_extensions, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)
 	append(&instance_extensions, ..glfw.GetRequiredInstanceExtensions())
 	count: u32
@@ -884,6 +920,8 @@ gpu_destroy :: proc(gctx: ^GPU_Context) {
 }
 
 _append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
+	context.allocator = r.allocator
+
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.shader_data.instances[fctx.total_instances] = instance
 	fctx.total_instances += 1
@@ -905,6 +943,8 @@ draw_sprite :: proc(
 	uv_rect := Rect{x = 0, y = 0, w = 1, h = 1},
 	is_additive := false,
 ) {
+	context.allocator = r.allocator
+
 	sprite := r.resources.sprites[sh.idx]
 	uv_scale := [2]f32{uv_rect.w, uv_rect.h}
 	if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
@@ -936,6 +976,8 @@ draw_rect :: proc(
 	rotation: f32 = 0,
 	is_additive := false,
 ) {
+	context.allocator = r.allocator
+
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -958,6 +1000,8 @@ draw_line :: proc(
 	rounded := false,
 	is_additive := false,
 ) {
+	context.allocator = r.allocator
+
 	if thickness <= 0 do return
 
 	center_pos := (p0 + p1) * 0.5
@@ -981,6 +1025,8 @@ draw_circle :: proc(
 	color: Color,
 	is_additive := false,
 ) {
+	context.allocator = r.allocator
+
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -994,6 +1040,8 @@ draw_circle :: proc(
 }
 
 draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additive := false) {
+	context.allocator = r.allocator
+
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -1017,6 +1065,8 @@ draw_text :: proc(
 	color := Color{255, 255, 255, 255},
 	spaces_per_tab := 4,
 ) {
+	context.allocator = r.allocator
+
 	if font.idx > len(r.resources.font_faces) - 1 {
 		return
 	}
@@ -1076,6 +1126,8 @@ draw_text :: proc(
 
 // Set the scissor/clip in SCREEN SPACE
 set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
+	context.allocator = r.allocator
+
 	fctx := &r.frame_contexts[r.frame_index]
 	append(
 		&fctx.draw_batches,
@@ -1090,6 +1142,8 @@ set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 
 // Reset the scissor/clip back to the full window
 clear_scissor :: proc(r: ^Renderer) {
+	context.allocator = r.allocator
+
 	set_scissor(r, 0, 0, u32(r.window.width), u32(r.window.height))
 }
 
@@ -1127,6 +1181,8 @@ convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
 // Create a Texture and upload it to the GPU and get back a handle which can be
 // used later to render with that Texture.
 texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Texture_Handle {
+	context.allocator = r.allocator
+
 	if len(r.resources.textures) == TEX_DESCRIPTOR_POOL_COUNT {
 		panic("maximum 1024 textures reached")
 	}
@@ -1262,6 +1318,8 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 // directly using `texture_load` to create and load to the GPU in one shot.
 @(private)
 texture_create :: proc(r: ^Renderer, format: vk.Format, width, height, mipLevels: u32) -> Texture {
+	context.allocator = r.allocator
+
 	tex: Texture
 	tex.sampler = r.resources.tex_sampler
 	tex_img_create_info := vk.ImageCreateInfo {
@@ -1312,6 +1370,8 @@ Sprite_Handle :: struct {
 }
 
 sprite_create :: proc(r: ^Renderer, t: Texture_Handle, width, height: f32) -> Sprite_Handle {
+	context.allocator = r.allocator
+
 	s := Sprite {
 		texture = t,
 		width   = width,
@@ -1407,6 +1467,8 @@ font_atlas_load :: proc(
 	handle: Font_Face_Handle,
 	err: Font_Atlas_Error,
 ) {
+	context.allocator = r.allocator
+
 	// TODO: Better support for BMF pages (multiple images files). This function
 	// can take in a map of image name to image bytes to avoid reify from having
 	// to load files from disk.
@@ -1459,7 +1521,7 @@ font_atlas_load :: proc(
 	face.line_height = atlas.common.line_height
 	face.y_base = atlas.common.base
 
-	glyphs := make([dynamic]Font_Face_Glyph, 0, len(atlas.chars))
+	face.glyphs = make([dynamic]Font_Face_Glyph, 0, len(atlas.chars))
 	for atlas_char in atlas.chars {
 		face_glyph := Font_Face_Glyph {
 			r         = rune(atlas_char.id),
@@ -1483,11 +1545,10 @@ font_atlas_load :: proc(
 			continue
 		}
 
-		glyph_idx := len(glyphs)
+		glyph_idx := len(face.glyphs)
 		face.glyph_lookup[face_glyph.r] = glyph_idx
-		append(&glyphs, face_glyph)
+		append(&face.glyphs, face_glyph)
 	}
-	face.glyphs = glyphs[:]
 
 	handle = Font_Face_Handle {
 		idx = len(r.resources.font_faces),
@@ -1503,7 +1564,7 @@ Font_Face :: struct {
 	line_height:   f32,
 	y_base:        f32, // y offset (from top of line) where chars sit
 	glyph_lookup:  map[rune]int,
-	glyphs:        []Font_Face_Glyph,
+	glyphs:        [dynamic]Font_Face_Glyph,
 	missing_glyph: Font_Face_Glyph,
 }
 
@@ -1532,6 +1593,8 @@ _font_get_glyph :: proc(
 	Font_Face_Glyph,
 	bool,
 ) {
+	context.allocator = r.allocator
+
 	if handle.idx > len(r.resources.font_faces) - 1 {
 		return {}, false
 	}
@@ -1543,4 +1606,10 @@ _font_get_glyph :: proc(
 	}
 
 	return face.glyphs[gid], true
+}
+
+font_face_destroy :: proc(face: ^Font_Face, allocator := context.allocator) {
+	context.allocator = allocator
+	delete(face.glyph_lookup)
+	delete(face.glyphs)
 }
