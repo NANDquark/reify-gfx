@@ -8,6 +8,7 @@ import "core:math"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:unicode"
 import "core:unicode/utf8"
 
 FIRST_CODEPOINT :: 32
@@ -513,7 +514,9 @@ collect_glyph_layout :: proc(
 			} else {
 				glyph.advance = 0
 				glyph.xadvance = 0
-				append(&missing_codepoints, codepoint)
+				if unicode.is_print(rune(codepoint)) {
+					append(&missing_codepoints, codepoint)
+				}
 			}
 		}
 
@@ -673,8 +676,25 @@ pack_glyphs :: proc(
 print_codepoint_summary :: proc(label: string, codepoints: []int) {
 	fmt.printfln("%s (%d)", label, len(codepoints))
 	for cp in codepoints {
-		fmt.printfln("  - U+%04X", cp)
+		fmt.printfln("  - '%s'", visible_rune_for_log(rune(cp)))
 	}
+}
+
+visible_rune_for_log :: proc(r: rune) -> string {
+	display_rune := r
+
+	// Render control characters and space as visible glyphs in logs.
+	if r == ' ' {
+		display_rune = '␠'
+	} else if r >= 0x00 && r <= 0x1f {
+		display_rune = rune(0x2400 + r)
+	} else if r == 0x7f {
+		display_rune = '␡'
+	}
+
+	runes: [1]rune
+	runes[0] = display_rune
+	return utf8.runes_to_string(runes[:])
 }
 
 next_pow2 :: proc(v: int) -> int {

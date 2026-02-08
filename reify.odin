@@ -7,6 +7,8 @@ import "core:image"
 import "core:image/png"
 import "core:math/linalg"
 import "core:mem"
+import "core:slice"
+import "core:unicode/utf8"
 import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -16,6 +18,9 @@ MAX_FRAME_IN_FLIGHT :: 3
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
 TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
 TEX_DESCRIPTOR_POOL_COUNT :: 1024
+
+// TODO: Take in an allocator, store it in Renderer and properly use it to
+// alloc and dealloc internally owned data.
 
 Renderer :: struct {
 	gpu:             GPU_Context,
@@ -29,6 +34,7 @@ Renderer :: struct {
 	resources:       struct {
 		textures:            [dynamic]Texture,
 		sprites:             [dynamic]Sprite,
+		font_faces:          [dynamic]Font_Face,
 		index_buffer:        vk.Buffer,
 		index_alloc:         vma.Allocation,
 		tex_staging_buffer:  vk.Buffer,
@@ -900,7 +906,13 @@ draw_sprite :: proc(
 	is_additive := false,
 ) {
 	sprite := r.resources.sprites[sh.idx]
-	pixel_scale := [2]f32{scale.x * sprite.width, scale.y * sprite.height}
+	uv_scale := [2]f32{uv_rect.w, uv_rect.h}
+	if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
+	if uv_scale.y < 0 do uv_scale.y = -uv_scale.y
+	pixel_scale := [2]f32 {
+		scale.x * sprite.width * uv_scale.x,
+		scale.y * sprite.height * uv_scale.y,
+	}
 	color := Color{rgb_tint.r, rgb_tint.b, rgb_tint.g, u8(alpha * 255 + 0.5)}
 	_append_instance(
 		r,
@@ -994,6 +1006,72 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additiv
 			uv_rect = {0, 0, 1, 1},
 		},
 	)
+}
+
+draw_text :: proc(
+	r: ^Renderer,
+	font: Font_Face_Handle,
+	text: string,
+	pos: [2]f32,
+	font_size: int,
+	color := Color{255, 255, 255, 255},
+	spaces_per_tab := 4,
+) {
+	if font.idx > len(r.resources.font_faces) - 1 {
+		return
+	}
+	face := r.resources.font_faces[font.idx]
+	scale := f32(font_size) / f32(face.size)
+
+	start_x := pos.x
+	pen_x := pos.x
+	pen_y := pos.y // baseline (where the letters sit)
+
+	for rr in text {
+		switch rr {
+		case '\n':
+			pen_x = start_x
+			pen_y += face.line_height * scale
+			continue
+		case '\t':
+			space_glyph, space_exists := _font_get_glyph(r, font, ' ')
+			if !space_exists {
+				pen_x += f32(spaces_per_tab) * 0.25 * face.line_height * scale // fallback
+			} else {
+				pen_x += f32(spaces_per_tab) * space_glyph.x_advance * scale
+			}
+			continue
+		case ' ':
+			space_glyph, space_exists := _font_get_glyph(r, font, ' ')
+			if !space_exists {
+				pen_x += 0.25 * face.line_height * scale // fallback
+			} else {
+				pen_x += space_glyph.x_advance * scale
+			}
+			continue
+		}
+
+		glyph, glyph_exists := _font_get_glyph(r, font, rr)
+		if !glyph_exists {
+			continue
+		}
+
+		x := pen_x + glyph.x_offset * scale
+		y := pen_y - face.y_base * scale + glyph.y_offset * scale
+		glyph_center := [2]f32{x + (glyph.width * scale) / 2, y + (glyph.height * scale) / 2}
+
+		if glyph.width > 0 && glyph.height > 0 {
+			draw_sprite(
+				r,
+				face.sprite,
+				glyph_center,
+				scale = {scale, scale},
+				uv_rect = glyph.uv_rect,
+			)
+		}
+
+		pen_x += glyph.x_advance * scale
+	}
 }
 
 // Set the scissor/clip in SCREEN SPACE
@@ -1245,39 +1323,39 @@ sprite_create :: proc(r: ^Renderer, t: Texture_Handle, width, height: f32) -> Sp
 }
 
 Font_Atlas :: struct {
-	pages:          []string                   `json:"pages"`,
-	chars:          []Font_Atlas_Char          `json:"chars"`,
-	info:           Font_Atlas_Info            `json:"info"`,
-	common:         Font_Atlas_Common          `json:"common"`,
-	distance_field: Font_Atlas_Distance_Field  `json:"distanceField"`,
-	kernings:       []Font_Atlas_Kerning       `json:"kernings"`,
+	pages:          []string `json:"pages"`,
+	chars:          []Font_Atlas_Char `json:"chars"`,
+	info:           Font_Atlas_Info `json:"info"`,
+	common:         Font_Atlas_Common `json:"common"`,
+	distance_field: Font_Atlas_Distance_Field `json:"distanceField"`,
+	kernings:       []Font_Atlas_Kerning `json:"kernings"`,
 }
 
 Font_Atlas_Info :: struct {
-	face:      string   `json:"face"`,
-	size:      int      `json:"size"`,
-	bold:      int      `json:"bold"`,
-	italic:    int      `json:"italic"`,
+	face:      string `json:"face"`,
+	size:      int `json:"size"`,
+	bold:      int `json:"bold"`,
+	italic:    int `json:"italic"`,
 	charset:   []string `json:"charset"`,
-	unicode:   int      `json:"unicode"`,
-	stretch_h: int      `json:"stretchH"`,
-	smooth:    int      `json:"smooth"`,
-	aa:        int      `json:"aa"`,
-	padding:   [4]int   `json:"padding"`,
-	spacing:   [2]int   `json:"spacing"`,
+	unicode:   int `json:"unicode"`,
+	stretch_h: int `json:"stretchH"`,
+	smooth:    int `json:"smooth"`,
+	aa:        int `json:"aa"`,
+	padding:   [4]int `json:"padding"`,
+	spacing:   [2]int `json:"spacing"`,
 }
 
 Font_Atlas_Common :: struct {
-	line_height: int `json:"lineHeight"`,
-	base:        int `json:"base"`,
-	scale_w:     int `json:"scaleW"`,
-	scale_h:     int `json:"scaleH"`,
-	pages:       int `json:"pages"`,
-	packed:      int `json:"packed"`,
-	alpha_chnl:  int `json:"alphaChnl"`,
-	red_chnl:    int `json:"redChnl"`,
-	green_chnl:  int `json:"greenChnl"`,
-	blue_chnl:   int `json:"blueChnl"`,
+	line_height:   f32 `json:"lineHeight"`,
+	base:          f32 `json:"base"`,
+	scale_w:       int `json:"scaleW"`,
+	scale_h:       int `json:"scaleH"`,
+	pages:         int `json:"pages"`,
+	packed:        int `json:"packed"`,
+	alpha_channel: int `json:"alphaChnl"`,
+	red_channel:   int `json:"redChnl"`,
+	green_channel: int `json:"greenChnl"`,
+	blue_channel:  int `json:"blueChnl"`,
 }
 
 Font_Atlas_Distance_Field :: struct {
@@ -1286,18 +1364,18 @@ Font_Atlas_Distance_Field :: struct {
 }
 
 Font_Atlas_Char :: struct {
-	id:        int    `json:"id"`,
-	index:     int    `json:"index"`,
+	id:         int `json:"id"`, // unicode codepoint
+	index:      int `json:"index"`,
 	glyph_char: string `json:"char"`,
-	width:     int    `json:"width"`,
-	height:    int    `json:"height"`,
-	xoffset:   int    `json:"xoffset"`,
-	yoffset:   int    `json:"yoffset"`,
-	xadvance:  int    `json:"xadvance"`,
-	chnl:      int    `json:"chnl"`,
-	x:         int    `json:"x"`,
-	y:         int    `json:"y"`,
-	page:      int    `json:"page"`,
+	width:      int `json:"width"`,
+	height:     int `json:"height"`,
+	xoffset:    int `json:"xoffset"`,
+	yoffset:    int `json:"yoffset"`,
+	xadvance:   int `json:"xadvance"`,
+	channel:    int `json:"chnl"`,
+	x:          int `json:"x"`,
+	y:          int `json:"y"`,
+	page:       int `json:"page"`,
 }
 
 Font_Atlas_Kerning :: struct {
@@ -1309,7 +1387,9 @@ Font_Atlas_Kerning :: struct {
 Font_Atlas_Load_Error :: enum {
 	Invalid_Page_Count,
 	Invalid_Dimensions,
+	Invalid_Pixel_Format,
 	Empty_Glyphs,
+	Packed_Channels_Not_Supported,
 }
 
 Font_Atlas_Error :: union #shared_nil {
@@ -1318,29 +1398,149 @@ Font_Atlas_Error :: union #shared_nil {
 	Font_Atlas_Load_Error,
 }
 
+// Load a font atlas which follows the Bitmap Font (BMF) Format (https://typebits.gitlab.io/bmf-format/)
 font_atlas_load :: proc(
-	font_atlas_bytes: []byte,
+	r: ^Renderer,
+	font_atlas_json: []byte,
 	font_atlas_img: []byte,
-	allocator := context.allocator,
 ) -> (
-	img: ^image.Image,
-	atlas: ^Font_Atlas,
+	handle: Font_Face_Handle,
 	err: Font_Atlas_Error,
 ) {
-	context.allocator = allocator
+	// TODO: Better support for BMF pages (multiple images files). This function
+	// can take in a map of image name to image bytes to avoid reify from having
+	// to load files from disk.
 
-	atlas = new(Font_Atlas)
-	json.unmarshal(font_atlas_bytes, atlas) or_return
+	temp_arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&temp_arena)
+	font_atlas_allocator := mem.dynamic_arena_allocator(&temp_arena)
+	defer mem.dynamic_arena_destroy(&temp_arena)
+
+	atlas := new(Font_Atlas)
+	json.unmarshal(font_atlas_json, atlas, allocator = font_atlas_allocator) or_return
+
 	if len(atlas.pages) != 1 || atlas.common.pages != 1 {
-		return nil, nil, Font_Atlas_Load_Error.Invalid_Page_Count
+		return {}, Font_Atlas_Load_Error.Invalid_Page_Count
 	}
 	if atlas.common.scale_w <= 0 || atlas.common.scale_h <= 0 {
-		return nil, nil, Font_Atlas_Load_Error.Invalid_Dimensions
+		return {}, Font_Atlas_Load_Error.Invalid_Dimensions
 	}
 	if len(atlas.chars) == 0 {
-		return nil, nil, Font_Atlas_Load_Error.Empty_Glyphs
+		return {}, Font_Atlas_Load_Error.Empty_Glyphs
 	}
-	img, err = image.load_from_bytes(font_atlas_img)
+	if atlas.common.packed != 0 {
+		return {}, Font_Atlas_Load_Error.Packed_Channels_Not_Supported
+	}
+
+	atlas_img := image.load_from_bytes(font_atlas_img, allocator = font_atlas_allocator) or_return
+	if atlas_img.depth != 8 || (atlas_img.channels != 3 && atlas_img.channels != 4) {
+		return {}, Font_Atlas_Load_Error.Invalid_Pixel_Format
+	}
+
+	pixel_count := atlas_img.width * atlas_img.height
+	atlas_img_pixels := make([]Color, pixel_count, allocator = font_atlas_allocator)
+	if atlas_img.channels == 3 {
+		src := atlas_img.pixels.buf[:]
+		for i in 0 ..< pixel_count {
+			si := i * 3
+			atlas_img_pixels[i] = {src[si], src[si + 1], src[si + 2], 255}
+		}
+	} else {
+		src := slice.reinterpret([]Color, atlas_img.pixels.buf[:])
+		copy(atlas_img_pixels, src)
+	}
+
+	atlas_img_tex := texture_load(r, atlas_img_pixels, atlas_img.width, atlas_img.height)
+	atlas_sprite := sprite_create(r, atlas_img_tex, f32(atlas_img.width), f32(atlas_img.height))
+
+	face: Font_Face
+	face.size = atlas.info.size
+	face.sprite = atlas_sprite
+	face.line_height = atlas.common.line_height
+	face.y_base = atlas.common.base
+
+	glyphs := make([dynamic]Font_Face_Glyph, 0, len(atlas.chars))
+	for atlas_char in atlas.chars {
+		face_glyph := Font_Face_Glyph {
+			r         = rune(atlas_char.id),
+			width     = f32(atlas_char.width),
+			height    = f32(atlas_char.height),
+			uv_rect   = {
+				f32(atlas_char.x) / f32(atlas_img.width),
+				f32(atlas_char.y) / f32(atlas_img.height),
+				f32(atlas_char.width) / f32(atlas_img.width),
+				f32(atlas_char.height) / f32(atlas_img.height),
+			},
+			x_offset  = f32(atlas_char.xoffset),
+			y_offset  = f32(atlas_char.yoffset),
+			x_advance = f32(atlas_char.xadvance),
+		}
+
+		// special case: unknown character glyph
+		if atlas_char.id == 0 {
+			face.missing_glyph = face_glyph
+			// don't put it in the face.chars since it isn't printable anyways
+			continue
+		}
+
+		glyph_idx := len(glyphs)
+		face.glyph_lookup[face_glyph.r] = glyph_idx
+		append(&glyphs, face_glyph)
+	}
+	face.glyphs = glyphs[:]
+
+	handle = Font_Face_Handle {
+		idx = len(r.resources.font_faces),
+	}
+	append(&r.resources.font_faces, face)
 
 	return
+}
+
+Font_Face :: struct {
+	sprite:        Sprite_Handle,
+	size:          int, // default size of glyphs
+	line_height:   f32,
+	y_base:        f32, // y offset (from top of line) where chars sit
+	glyph_lookup:  map[rune]int,
+	glyphs:        []Font_Face_Glyph,
+	missing_glyph: Font_Face_Glyph,
+}
+
+// TODO may need a Font_Face_Metrics to provide user code details like y_base,
+// line_height, etc for layouting.
+
+Font_Face_Glyph :: struct {
+	r:         rune,
+	uv_rect:   Rect,
+	width:     f32,
+	height:    f32,
+	x_offset:  f32,
+	y_offset:  f32,
+	x_advance: f32,
+}
+
+Font_Face_Handle :: struct {
+	idx: int,
+}
+
+_font_get_glyph :: proc(
+	r: ^Renderer,
+	handle: Font_Face_Handle,
+	char: rune,
+) -> (
+	Font_Face_Glyph,
+	bool,
+) {
+	if handle.idx > len(r.resources.font_faces) - 1 {
+		return {}, false
+	}
+	face := r.resources.font_faces[handle.idx]
+
+	gid, exists := face.glyph_lookup[char]
+	if !exists || gid > len(face.glyphs) - 1 {
+		return face.missing_glyph, true
+	}
+
+	return face.glyphs[gid], true
 }
