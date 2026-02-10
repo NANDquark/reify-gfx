@@ -122,7 +122,7 @@ main :: proc() {
 		// )
 		p0 := [2]f32{f32(window_width) / 2 - 300, f32(window_height) / 2 + 200}
 		p1 := [2]f32{p0.x + 500, p0.y}
-		re.draw_text(&renderer, font, "gbc DEi	1`2~3	!-@=#\nabcdefghijklmnopqrstuvwxyz", p0, 42)
+		re.draw_text(&renderer, font, "gbc DEi	1`2~3	!-@=#\nabcdefghijklmnopqrstuvwxyz", p0, 14)
 		re.end_screen_mode(&renderer)
 
 		re.present(&renderer)

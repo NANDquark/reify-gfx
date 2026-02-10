@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:image"
+import "core:math"
 import "core:math/linalg"
 import "core:mem"
 import "core:slice"
@@ -49,6 +50,7 @@ Renderer :: struct {
 		tex_staging_buffer:   vk.Buffer,
 		tex_staging_alloc:    vma.Allocation,
 		tex_sampler:          vk.Sampler,
+		msdf_sampler:         vk.Sampler,
 	},
 	pipeline:        vk.Pipeline,
 	pipeline_layout: vk.PipelineLayout,
@@ -176,8 +178,8 @@ init :: proc(
 	}
 	vma.flush_allocation(r.gpu.allocator, r.resources.index_alloc, 0, index_buf_size)
 
-	// Init global sampler
-	sampler_create_info := vk.SamplerCreateInfo {
+	// Init global samplers
+	tex_sampler_create_info := vk.SamplerCreateInfo {
 		sType            = .SAMPLER_CREATE_INFO,
 		magFilter        = .LINEAR,
 		minFilter        = .LINEAR,
@@ -189,7 +191,23 @@ init :: proc(
 		maxAnisotropy    = 8, // widely used
 		maxLod           = vk.LOD_CLAMP_NONE,
 	}
-	vk_assert(vk.CreateSampler(r.gpu.device, &sampler_create_info, nil, &r.resources.tex_sampler))
+	vk_assert(
+		vk.CreateSampler(r.gpu.device, &tex_sampler_create_info, nil, &r.resources.tex_sampler),
+	)
+	msdf_sampler_create_info := vk.SamplerCreateInfo {
+		sType            = .SAMPLER_CREATE_INFO,
+		magFilter        = .LINEAR,
+		minFilter        = .LINEAR,
+		addressModeU     = .CLAMP_TO_EDGE,
+		addressModeV     = .CLAMP_TO_EDGE,
+		addressModeW     = .CLAMP_TO_EDGE,
+		anisotropyEnable = false,
+		maxAnisotropy    = 8, // widely used
+		maxLod           = 0,
+	}
+	vk_assert(
+		vk.CreateSampler(r.gpu.device, &msdf_sampler_create_info, nil, &r.resources.msdf_sampler),
+	)
 
 	// CPU & GPU Sync
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
@@ -379,6 +397,7 @@ init :: proc(
 	desc_pool_sizes := [?]vk.DescriptorPoolSize {
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = TEXTURE_MAX_COUNT},
 		{type = .STORAGE_BUFFER, descriptorCount = FONT_MAX_COUNT},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = FONT_MAX_COUNT},
 	}
 	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
@@ -448,6 +467,7 @@ destroy :: proc(r: ^Renderer) {
 	}
 	delete(r.resources.font_faces)
 	vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
+	vk.DestroySampler(r.gpu.device, r.resources.msdf_sampler, nil)
 	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.desc_set_layout, nil)
 	vk.DestroyDescriptorPool(r.gpu.device, r.resources.desc_pool, nil)
 	vma.destroy_buffer(r.gpu.allocator, r.resources.index_buffer, r.resources.index_alloc)
@@ -455,6 +475,16 @@ destroy :: proc(r: ^Renderer) {
 		r.gpu.allocator,
 		r.resources.tex_staging_buffer,
 		r.resources.tex_staging_alloc,
+	)
+	vma.destroy_buffer(
+		r.gpu.allocator,
+		r.resources.font_staging_buffer,
+		r.resources.font_staging_alloc,
+	)
+	vma.destroy_buffer(
+		r.gpu.allocator,
+		r.resources.font_device_buffer,
+		r.resources.font_device_alloc,
 	)
 
 	vk.DestroyPipelineLayout(r.gpu.device, r.pipeline_layout, nil)
@@ -1117,7 +1147,6 @@ draw_text :: proc(
 	}
 	face := r.resources.font_faces[font.idx]
 	scale := f32(font_size) / f32(face.size)
-	sprite := r.resources.sprites[face.sprite.idx]
 
 	start_x := pos.x
 	pen_x := pos.x
@@ -1154,7 +1183,11 @@ draw_text :: proc(
 
 		x := pen_x + glyph.x_offset * scale
 		y := pen_y - face.y_base * scale + glyph.y_offset * scale
-		glyph_center := [2]f32{x + (glyph.width * scale) / 2, y + (glyph.height * scale) / 2}
+		// snap x, y to pixel grid so small font sizes render a bit clearer
+		glyph_center := [2]f32 {
+			math.round(x) + glyph.width * scale * 0.5,
+			math.round(y) + glyph.height * scale * 0.5,
+		}
 
 		if glyph.width > 0 && glyph.height > 0 {
 			scale := [2]f32{scale, scale}
@@ -1162,8 +1195,8 @@ draw_text :: proc(
 			if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
 			if uv_scale.y < 0 do uv_scale.y = -uv_scale.y
 			pixel_scale := [2]f32 {
-				scale.x * sprite.width * uv_scale.x,
-				scale.y * sprite.height * uv_scale.y,
+				scale.x * f32(face.tex_size.x) * uv_scale.x,
+				scale.y * f32(face.tex_size.y) * uv_scale.y,
 			}
 			_append_instance(
 				r,
@@ -1171,9 +1204,10 @@ draw_text :: proc(
 					type = u32(Quad_Instance_Type.MSDF),
 					pos = glyph_center,
 					scale = pixel_scale,
-					texture_index = u32(sprite.texture.idx),
 					color = convert_color(color, false),
 					uv_rect = {glyph.uv_rect.x, glyph.uv_rect.y, glyph.uv_rect.w, glyph.uv_rect.h},
+					texture_index = u32(face.texture.idx),
+					data1 = u32(font.idx),
 				},
 			)
 		}
@@ -1206,10 +1240,9 @@ clear_scissor :: proc(r: ^Renderer) {
 }
 
 Texture :: struct {
-	alloc:   vma.Allocation,
-	image:   vk.Image,
-	view:    vk.ImageView,
-	sampler: vk.Sampler,
+	alloc: vma.Allocation,
+	image: vk.Image,
+	view:  vk.ImageView,
 }
 
 Texture_Handle :: struct {
@@ -1238,16 +1271,35 @@ convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
 // used later to render with that Texture.
-texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Texture_Handle {
+texture_load :: proc(
+	r: ^Renderer,
+	pixels: []Color,
+	width, height: int,
+	optional_sampler: Maybe(vk.Sampler) = nil,
+) -> Texture_Handle {
 	context.allocator = r.allocator
 
 	if len(r.resources.textures) == TEXTURE_MAX_COUNT {
 		panic("maximum 1024 textures reached")
 	}
 
-	tex := texture_create(r, vk.Format.R8G8B8A8_SRGB, u32(width), u32(height), 1)
+	sampler: vk.Sampler
+	if real_sampler, ok := optional_sampler.?; ok {
+		sampler = real_sampler
+	} else {
+		sampler = r.resources.tex_sampler
+	}
+
+	tex_vk_img := vk_create_texture(
+		r.gpu.device,
+		r.gpu.allocator,
+		vk.Format.R8G8B8A8_UNORM,
+		u32(width),
+		u32(height),
+		1,
+	)
 	idx := len(r.resources.textures)
-	append(&r.resources.textures, tex)
+	append(&r.resources.textures, tex_vk_img)
 
 	// copy image to the staging buffer
 	tex_staging_buffer_ptr: rawptr
@@ -1296,7 +1348,7 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 				dstAccessMask = {.TRANSFER_WRITE},
 				oldLayout = .UNDEFINED,
 				newLayout = .TRANSFER_DST_OPTIMAL,
-				image = tex.image,
+				image = tex_vk_img.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
 					levelCount = 1,
@@ -1319,7 +1371,7 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 		vk.CmdCopyBufferToImage(
 			one_time_cb.cmd,
 			r.resources.tex_staging_buffer,
-			tex.image,
+			tex_vk_img.image,
 			.TRANSFER_DST_OPTIMAL,
 			1,
 			&img_buffer_img_copy,
@@ -1338,7 +1390,7 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 				dstAccessMask = {.SHADER_READ},
 				oldLayout = .TRANSFER_DST_OPTIMAL,
 				newLayout = .SHADER_READ_ONLY_OPTIMAL,
-				image = tex.image,
+				image = tex_vk_img.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
 					levelCount = 1,
@@ -1361,8 +1413,8 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 		descriptorCount = 1,
 		descriptorType  = .COMBINED_IMAGE_SAMPLER,
 		pImageInfo      = &{
-			sampler = tex.sampler,
-			imageView = tex.view,
+			sampler = sampler,
+			imageView = tex_vk_img.view,
 			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		},
 	}
@@ -1372,50 +1424,6 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 	return Texture_Handle{idx = idx}
 }
 
-// Create a Texture on the CPU, but don't upload it to the GPU. Generally prefer
-// directly using `texture_load` to create and load to the GPU in one shot.
-@(private)
-texture_create :: proc(r: ^Renderer, format: vk.Format, width, height, mipLevels: u32) -> Texture {
-	context.allocator = r.allocator
-
-	tex: Texture
-	tex.sampler = r.resources.tex_sampler
-	tex_img_create_info := vk.ImageCreateInfo {
-		sType = .IMAGE_CREATE_INFO,
-		imageType = .D2,
-		format = format,
-		extent = vk.Extent3D{width = width, height = height, depth = 1},
-		mipLevels = mipLevels,
-		arrayLayers = 1,
-		samples = {._1},
-		tiling = .OPTIMAL,
-		usage = {.TRANSFER_DST, .SAMPLED},
-		initialLayout = .UNDEFINED,
-	}
-	vk_assert(
-		vma.create_image(
-			r.gpu.allocator,
-			tex_img_create_info,
-			{usage = .Auto},
-			&tex.image,
-			&tex.alloc,
-			nil,
-		),
-	)
-	tex_view_create_info := vk.ImageViewCreateInfo {
-		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = tex.image,
-		viewType = .D2,
-		format = tex_img_create_info.format,
-		subresourceRange = vk.ImageSubresourceRange {
-			aspectMask = {.COLOR},
-			levelCount = mipLevels,
-			layerCount = 1,
-		},
-	}
-	vk_assert(vk.CreateImageView(r.gpu.device, &tex_view_create_info, nil, &tex.view))
-	return tex
-}
 
 Sprite :: struct {
 	texture: Texture_Handle,
@@ -1478,7 +1486,7 @@ Font_Atlas_Common :: struct {
 
 Font_Atlas_Distance_Field :: struct {
 	field_type:     string `json:"fieldType"`,
-	distance_range: int `json:"distanceRange"`,
+	distance_range: f32 `json:"distanceRange"`,
 }
 
 Font_Atlas_Char :: struct {
@@ -1565,17 +1573,29 @@ font_load :: proc(
 			si := i * 3
 			atlas_img_pixels[i] = {src[si], src[si + 1], src[si + 2], 255}
 		}
-	} else {
+	} else if atlas_img.channels == 4 {
 		src := slice.reinterpret([]Color, atlas_img.pixels.buf[:])
 		copy(atlas_img_pixels, src)
+	} else {
+		panic(
+			fmt.tprintf(
+				"font_load unsupporter number of channels in atlas image, num_channels=%d",
+				atlas_img.channels,
+			),
+		)
 	}
 
-	atlas_img_tex := texture_load(r, atlas_img_pixels, atlas_img.width, atlas_img.height)
-	atlas_sprite := sprite_create(r, atlas_img_tex, f32(atlas_img.width), f32(atlas_img.height))
+	atlas_tex := texture_load(
+		r,
+		atlas_img_pixels,
+		atlas_img.width,
+		atlas_img.height,
+		r.resources.msdf_sampler,
+	)
 
 	face: Font_Face
+	face.texture = atlas_tex
 	face.size = atlas.info.size
-	face.sprite = atlas_sprite
 	face.line_height = atlas.common.line_height
 	face.y_base = atlas.common.base
 	face.distance_range = atlas.distance_field.distance_range
@@ -1617,13 +1637,13 @@ font_load :: proc(
 	append(
 		&r.resources.quad_fonts,
 		Quad_Font {
-			px_range = u32(face.distance_range),
+			px_range = face.distance_range,
 			tex_size = {u32(face.tex_size.x), u32(face.tex_size.y)},
 		},
 	)
 
 	data_size := len(r.resources.font_faces) * size_of(Quad_Font)
-	mem.copy(r.resources.font_staging_buf_ptr, raw_data(r.resources.font_faces), data_size)
+	mem.copy(r.resources.font_staging_buf_ptr, raw_data(r.resources.quad_fonts), data_size)
 	vma.flush_allocation(
 		r.gpu.allocator,
 		r.resources.font_staging_alloc,
@@ -1662,30 +1682,32 @@ font_load :: proc(
 		vk.CmdPipelineBarrier2(one_time_cb.cmd, &dep_info)
 	}
 	vk_one_time_cmd_buffer_end(&one_time_cb)
-	write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.resources.desc_set,
-		dstBinding      = DESC_BINDING_FONTS,
-		descriptorCount = 1,
-		descriptorType  = .STORAGE_BUFFER,
-		pBufferInfo     = &vk.DescriptorBufferInfo {
-			buffer = r.resources.font_device_buffer,
-			offset = 0,
-			range = vk.DeviceSize(vk.WHOLE_SIZE),
+	writes := [?]vk.WriteDescriptorSet {
+		{
+			sType = .WRITE_DESCRIPTOR_SET,
+			dstSet = r.resources.desc_set,
+			dstBinding = DESC_BINDING_FONTS,
+			descriptorCount = 1,
+			descriptorType = .STORAGE_BUFFER,
+			pBufferInfo = &vk.DescriptorBufferInfo {
+				buffer = r.resources.font_device_buffer,
+				offset = 0,
+				range = vk.DeviceSize(vk.WHOLE_SIZE),
+			},
 		},
 	}
-	vk.UpdateDescriptorSets(r.gpu.device, 1, &write, 0, nil)
+	vk.UpdateDescriptorSets(r.gpu.device, len(writes), raw_data(writes[:]), 0, nil)
 	vk_assert(vk.QueueWaitIdle(r.gpu.queue))
 
 	return
 }
 
 Font_Face :: struct {
-	sprite:         Sprite_Handle,
+	texture:        Texture_Handle,
 	size:           int, // default size of glyphs
 	line_height:    f32,
 	y_base:         f32, // y offset (from top of line) where chars sit
-	distance_range: int,
+	distance_range: f32,
 	tex_size:       [2]int,
 	glyph_lookup:   map[rune]int,
 	glyphs:         [dynamic]Font_Face_Glyph,

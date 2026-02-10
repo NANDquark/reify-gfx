@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:math/linalg"
 import "core:mem"
 import "core:reflect"
+import "lib/vma"
 import vk "vendor:vulkan"
 
 // Assert that the vulkan result is success
@@ -398,4 +399,48 @@ vk_ortho_projection :: proc(left, right, bottom, top, near, far: f32) -> Mat4f {
 	// units then translate it +0.5 so it sits from 0 - 1.
 	vk_projection := vk_correction * gl_projection
 	return vk_projection
+}
+
+vk_create_texture :: proc(
+	device: vk.Device,
+	allocator: vma.Allocator,
+	format: vk.Format,
+	width, height, mipLevels: u32,
+) -> Texture {
+	tex: Texture
+	tex_img_create_info := vk.ImageCreateInfo {
+		sType = .IMAGE_CREATE_INFO,
+		imageType = .D2,
+		format = format,
+		extent = vk.Extent3D{width = width, height = height, depth = 1},
+		mipLevels = mipLevels,
+		arrayLayers = 1,
+		samples = {._1},
+		tiling = .OPTIMAL,
+		usage = {.TRANSFER_DST, .SAMPLED},
+		initialLayout = .UNDEFINED,
+	}
+	vk_assert(
+		vma.create_image(
+			allocator,
+			tex_img_create_info,
+			{usage = .Auto},
+			&tex.image,
+			&tex.alloc,
+			nil,
+		),
+	)
+	tex_view_create_info := vk.ImageViewCreateInfo {
+		sType = .IMAGE_VIEW_CREATE_INFO,
+		image = tex.image,
+		viewType = .D2,
+		format = tex_img_create_info.format,
+		subresourceRange = vk.ImageSubresourceRange {
+			aspectMask = {.COLOR},
+			levelCount = mipLevels,
+			layerCount = 1,
+		},
+	}
+	vk_assert(vk.CreateImageView(device, &tex_view_create_info, nil, &tex.view))
+	return tex
 }

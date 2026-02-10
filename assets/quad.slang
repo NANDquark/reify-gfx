@@ -20,8 +20,7 @@ struct Instance {
     get { return float2(rotation, asfloat(data1)); }
   }
 
-  // When type is Instance_Type.MSDF use _pad0 as a reference to the Font_Style
-  property uint32_t msdf_index {
+  property uint32_t font_index {
     get { return data1; }
   }
 };
@@ -36,7 +35,7 @@ enum Instance_Type : uint32_t {
 }
 
 struct Font {
-  uint32_t px_range;
+  float px_range;
   uint32_t _pad0;
   uint32_t2 tex_size;
 }
@@ -138,7 +137,7 @@ float4 fragMain(VertexOutput input) {
   }
 
   if (instance_type == Instance_Type.MSDF) {
-    Font font = fonts[instance.msdf_index];
+    Font font = fonts[instance.font_index];
     float3 msdf = textures[instance.texture_index].Sample(input.uv).rgb;
     float a = msdf_coverage(msdf, input.uv, font.tex_size, font.px_range);
     return instance.color * a;
@@ -149,8 +148,9 @@ float4 fragMain(VertexOutput input) {
 
 float msdf_coverage(float3 msdf, float2 uv, float2 texSizePx, float pxRange) {
   float sd = median3(msdf.r, msdf.g, msdf.b) - 0.5;
-  float2 unitRange = (pxRange.xx) / texSizePx;
-  float2 screenTexSize = 1.0 / fwidth(uv);
-  float screenPxRange = max(0.5 * dot(unitRange, screenTexSize), 1.0);
-  return saturate(sd * screenPxRange + 0.5);
+  float2 dx = ddx(uv * texSizePx);
+  float2 dy = ddy(uv * texSizePx);
+  float texelsPerPixel = rsqrt(max(dot(dx, dx), dot(dy, dy)));
+  float screenPxRange = max(0.5 * pxRange * texelsPerPixel, 1.0);
+  return saturate((sd + 0.01) * (screenPxRange * 1.15) + 0.5);
 }

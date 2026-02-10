@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-02-10 06:18:57.672180743 +0000 UTC
+// Generated: 2026-02-10 22:01:36.385313456 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
@@ -17,7 +17,7 @@ Quad_Instance :: struct #align (16) {
 }
 
 Quad_Font :: struct #align (16) {
-    px_range: u32,
+    px_range: f32,
     _pad0: u32,
     tex_size: [2]u32,
 }
