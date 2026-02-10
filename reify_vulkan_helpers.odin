@@ -151,6 +151,7 @@ vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Cmd_Buffer) {
 
 	vk.DestroyFence(ctx.device, ctx.fence, nil)
 	vk.FreeCommandBuffers(ctx.device, ctx.command_pool, 1, &ctx.cmd)
+	ctx^ = {}
 }
 
 vk_shader_module_init :: proc(

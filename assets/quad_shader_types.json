@@ -1,29 +1,8 @@
 {
     "parameters": [
         {
-            "name": "textures",
-            "binding": {"kind": "descriptorTableSlot", "index": 0},
-            "type": {
-                "kind": "array",
-                "elementCount": 0,
-                "elementType": {
-                    "kind": "resource",
-                    "baseShape": "texture2D",
-                    "combined": true,
-                    "resultType": {
-                        "kind": "vector",
-                        "elementCount": 4,
-                        "elementType": {
-                            "kind": "scalar",
-                            "scalarType": "float32"
-                        }
-                    }
-                }
-            }
-        },
-        {
             "name": "_ReflectionAnchor",
-            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "binding": {"kind": "descriptorTableSlot", "index": 2},
             "type": {
                 "kind": "resource",
                 "baseShape": "structuredBuffer",
@@ -89,7 +68,7 @@
                                             "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                                         },
                                         {
-                                            "name": "_pad0",
+                                            "name": "data1",
                                             "type": {
                                                 "kind": "scalar",
                                                 "scalarType": "uint32"
@@ -196,6 +175,69 @@
                     "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
                 }
             }
+        },
+        {
+            "name": "textures",
+            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "combined": true,
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "name": "fonts",
+            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "type": {
+                "kind": "resource",
+                "baseShape": "structuredBuffer",
+                "resultType": {
+                    "kind": "struct",
+                    "name": "Font",
+                    "fields": [
+                        {
+                            "name": "px_range",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "_pad0",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "tex_size",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 2,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 4}
+                        }
+                    ]
+                }
+            }
         }
     ],
     "entryPoints": [
@@ -267,16 +309,20 @@
             },
             "bindings": [
                 {
-                    "name": "textures",
-                    "binding": {"kind": "descriptorTableSlot", "index": 0}
-                },
-                {
                     "name": "_ReflectionAnchor",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "pc",
                     "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                {
+                    "name": "textures",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "fonts",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
                 }
             ]
         },
@@ -353,16 +399,20 @@
             },
             "bindings": [
                 {
-                    "name": "textures",
-                    "binding": {"kind": "descriptorTableSlot", "index": 0}
-                },
-                {
                     "name": "_ReflectionAnchor",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "pc",
                     "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                {
+                    "name": "textures",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "fonts",
+                    "binding": {"kind": "descriptorTableSlot", "index": 1}
                 }
             ]
         }

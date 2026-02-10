@@ -1,26 +1,28 @@
-
-Sampler2D textures[];
-
 struct Instance {
   float2 pos;
   float2 scale;
   float rotation;
   uint32_t texture_index;
   uint32_t type;
-  uint32_t _pad0;
+  uint32_t data1;
   float4 color; // pre-multiplied alpha
   float4 uv_rect;
 
   // When type is Instance_Type.Triangle we need to smuggle the three points
   // inside other quad instance fields to preserve a single shader & pipeline
-  property float2 p0 {
+  property float2 tri_p0 {
     get { return pos; }
   }
-  property float2 p1 {
+  property float2 tri_p1 {
     get { return scale; }
   }
-  property float2 p2 {
-    get { return float2(rotation, asfloat(_pad0)); }
+  property float2 tri_p2 {
+    get { return float2(rotation, asfloat(data1)); }
+  }
+
+  // When type is Instance_Type.MSDF use _pad0 as a reference to the Font_Style
+  property uint32_t msdf_index {
+    get { return data1; }
   }
 };
 
@@ -30,7 +32,13 @@ enum Instance_Type : uint32_t {
   Rect = 1,
   Circle = 2,
   Triangle = 3,
-  Line = 4,
+  MSDF = 4,
+}
+
+struct Font {
+  uint32_t px_range;
+  uint32_t _pad0;
+  uint32_t2 tex_size;
 }
 
 struct VertexOutput {
@@ -51,11 +59,18 @@ struct Push_Constants {
   Shader_Data *data;
 };
 
-// This exposes the Shader_Data to the reflection_types JSON output
+// Expose to the reflection_types JSON output since this type is not actually
+// directly used anywhere
 StructuredBuffer<Shader_Data> _ReflectionAnchor;
 
 [[vk::push_constant]]
 Push_Constants pc;
+
+[[vk::binding(0, 0)]]
+Sampler2D textures[];
+
+[[vk::binding(1, 0)]]
+StructuredBuffer<Font> fonts;
 
 // This is using a vertex-pulling strategy using a structured buffer where
 // each sprite has one entry. Then we use the SV_VertexID and indexed drawing
@@ -75,10 +90,8 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
   // Special case for triangles to make them a degenerate quad with a duplicate
   // point
   if (instance.type == Instance_Type.Triangle) {
-    float2 p0 = instance.pos;
-    float2 p1 = instance.scale;
-    float2 p2 = float2(instance.rotation, asfloat(instance._pad0));
-    float2 triPoints[4] = { p0, p1, p2, p0 };
+    float2 triPoints[4] = { instance.tri_p0, instance.tri_p1, instance.tri_p2,
+                            instance.tri_p0 };
     finalWorldPos = triPoints[cornerIndex];
   } else {
     float2 quadCorners[4] = { float2(-0.5, -0.5), float2(0.5, -0.5),
@@ -124,5 +137,20 @@ float4 fragMain(VertexOutput input) {
     return instance.color * mask;
   }
 
+  if (instance_type == Instance_Type.MSDF) {
+    Font font = fonts[instance.msdf_index];
+    float3 msdf = textures[instance.texture_index].Sample(input.uv).rgb;
+    float a = msdf_coverage(msdf, input.uv, font.tex_size, font.px_range);
+    return instance.color * a;
+  }
+
   return instance.color;
+}
+
+float msdf_coverage(float3 msdf, float2 uv, float2 texSizePx, float pxRange) {
+  float sd = median3(msdf.r, msdf.g, msdf.b) - 0.5;
+  float2 unitRange = (pxRange.xx) / texSizePx;
+  float2 screenTexSize = 1.0 / fwidth(uv);
+  float screenPxRange = max(0.5 * dot(unitRange, screenTexSize), 1.0);
+  return saturate(sd * screenPxRange + 0.5);
 }

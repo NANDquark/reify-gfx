@@ -14,8 +14,12 @@ import vk "vendor:vulkan"
 SHADER_BYTES :: #load("assets/quad.spv")
 MAX_FRAME_IN_FLIGHT :: 3
 IMAGE_FORMAT := vk.Format.B8G8R8A8_SRGB
+FONT_MAX_COUNT :: 128
+FONT_BUFFER_SIZE :: FONT_MAX_COUNT * size_of(Quad_Font)
 TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
-TEX_DESCRIPTOR_POOL_COUNT :: 1024
+TEXTURE_MAX_COUNT :: 1024
+DESC_BINDING_TEXTURES :: 0
+DESC_BINDING_FONTS :: 1
 
 Renderer :: struct {
 	allocator:       mem.Allocator,
@@ -28,17 +32,23 @@ Renderer :: struct {
 	},
 	swapchain:       Swapchain_Context,
 	resources:       struct {
-		textures:            [dynamic]Texture,
-		sprites:             [dynamic]Sprite,
-		font_faces:          [dynamic]Font_Face,
-		index_buffer:        vk.Buffer,
-		index_alloc:         vma.Allocation,
-		tex_staging_buffer:  vk.Buffer,
-		tex_staging_alloc:   vma.Allocation,
-		tex_desc_pool:       vk.DescriptorPool,
-		tex_desc_set:        vk.DescriptorSet,
-		tex_desc_set_layout: vk.DescriptorSetLayout,
-		tex_sampler:         vk.Sampler,
+		textures:             [dynamic]Texture,
+		sprites:              [dynamic]Sprite,
+		font_faces:           [dynamic]Font_Face,
+		quad_fonts:           [dynamic]Quad_Font,
+		desc_pool:            vk.DescriptorPool,
+		desc_set:             vk.DescriptorSet,
+		desc_set_layout:      vk.DescriptorSetLayout,
+		index_buffer:         vk.Buffer,
+		index_alloc:          vma.Allocation,
+		font_staging_buffer:  vk.Buffer,
+		font_staging_alloc:   vma.Allocation,
+		font_staging_buf_ptr: [^]Quad_Font,
+		font_device_buffer:   vk.Buffer,
+		font_device_alloc:    vma.Allocation,
+		tex_staging_buffer:   vk.Buffer,
+		tex_staging_alloc:    vma.Allocation,
+		tex_sampler:          vk.Sampler,
 	},
 	pipeline:        vk.Pipeline,
 	pipeline_layout: vk.PipelineLayout,
@@ -131,20 +141,20 @@ init :: proc(
 	// Setup Index Buffer
 	index_count := QUAD_MAX_INSTANCES * 6 // each sprite has 2 quads so 6 indices
 	index_buf_size := vk.DeviceSize(index_count * size_of(u32))
-	buffer_create_info := vk.BufferCreateInfo {
+	index_buf_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
 		size  = index_buf_size,
 		usage = {.INDEX_BUFFER},
 	}
-	buffer_alloc_create_info := vma.Allocation_Create_Info {
+	index_buf_alloc_create_info := vma.Allocation_Create_Info {
 		flags = {.Host_Access_Sequential_Write, .Host_Access_Allow_Transfer_Instead, .Mapped},
 		usage = .Auto,
 	}
 	vk_assert(
 		vma.create_buffer(
 			r.gpu.allocator,
-			buffer_create_info,
-			buffer_alloc_create_info,
+			index_buf_create_info,
+			index_buf_alloc_create_info,
 			&r.resources.index_buffer,
 			&r.resources.index_alloc,
 			nil,
@@ -268,6 +278,55 @@ init :: proc(
 		)
 	}
 
+	// Init font buffers
+	font_staging_buf_create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = FONT_BUFFER_SIZE,
+		usage = {.TRANSFER_SRC},
+	}
+	font_staging_buf_alloc_create_info := vma.Allocation_Create_Info {
+		flags           = {.Host_Access_Sequential_Write, .Mapped},
+		usage           = .Auto,
+		required_flags  = {.HOST_VISIBLE},
+		preferred_flags = {.HOST_COHERENT},
+	}
+	vk_assert(
+		vma.create_buffer(
+			r.gpu.allocator,
+			font_staging_buf_create_info,
+			font_staging_buf_alloc_create_info,
+			&r.resources.font_staging_buffer,
+			&r.resources.font_staging_alloc,
+			nil,
+		),
+	)
+	font_staging_alloc_info: vma.Allocation_Info
+	vma.get_allocation_info(
+		r.gpu.allocator,
+		r.resources.font_staging_alloc,
+		&font_staging_alloc_info,
+	)
+	r.resources.font_staging_buf_ptr = cast([^]Quad_Font)font_staging_alloc_info.mapped_data
+	font_device_buffer_create_info := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		size  = FONT_BUFFER_SIZE,
+		usage = {.TRANSFER_DST, .STORAGE_BUFFER},
+	}
+	font_device_alloc_create_info := vma.Allocation_Create_Info {
+		usage          = .Auto,
+		required_flags = {.DEVICE_LOCAL},
+	}
+	vk_assert(
+		vma.create_buffer(
+			r.gpu.allocator,
+			font_device_buffer_create_info,
+			font_device_alloc_create_info,
+			&r.resources.font_device_buffer,
+			&r.resources.font_device_alloc,
+			nil,
+		),
+	)
+
 	// Textures globals
 	tex_staging_buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
@@ -288,72 +347,69 @@ init :: proc(
 			nil,
 		),
 	)
-	tex_desc_var_flags := vk.DescriptorBindingFlags{.VARIABLE_DESCRIPTOR_COUNT}
-	tex_desc_binding_flags := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
-		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		bindingCount  = 1,
-		pBindingFlags = &tex_desc_var_flags,
+
+	// descriptors
+	desc_layout_bindings := [?]vk.DescriptorSetLayoutBinding {
+		{
+			binding = DESC_BINDING_TEXTURES,
+			descriptorType = .COMBINED_IMAGE_SAMPLER,
+			descriptorCount = TEXTURE_MAX_COUNT,
+			stageFlags = {.FRAGMENT},
+		},
+		{
+			binding = DESC_BINDING_FONTS,
+			descriptorType = .STORAGE_BUFFER,
+			descriptorCount = FONT_MAX_COUNT,
+			stageFlags = {.VERTEX, .FRAGMENT},
+		},
 	}
-	tex_desc_layout_binding := vk.DescriptorSetLayoutBinding {
-		descriptorType  = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = TEX_DESCRIPTOR_POOL_COUNT,
-		stageFlags      = {.FRAGMENT},
-	}
-	tex_desc_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
+	desc_layout_create_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		pNext        = &tex_desc_binding_flags,
-		bindingCount = 1,
-		pBindings    = &tex_desc_layout_binding,
+		bindingCount = len(desc_layout_bindings),
+		pBindings    = raw_data(desc_layout_bindings[:]),
 	}
 	vk_assert(
 		vk.CreateDescriptorSetLayout(
 			r.gpu.device,
-			&tex_desc_layout_create_info,
+			&desc_layout_create_info,
 			nil,
-			&r.resources.tex_desc_set_layout,
+			&r.resources.desc_set_layout,
 		),
 	)
-	tex_pool_size := vk.DescriptorPoolSize {
-		type            = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = TEX_DESCRIPTOR_POOL_COUNT,
+	desc_pool_sizes := [?]vk.DescriptorPoolSize {
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = TEXTURE_MAX_COUNT},
+		{type = .STORAGE_BUFFER, descriptorCount = FONT_MAX_COUNT},
 	}
-	tex_desc_pool_create_info := vk.DescriptorPoolCreateInfo {
+	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		maxSets       = 1,
-		poolSizeCount = 1,
-		pPoolSizes    = &tex_pool_size,
+		poolSizeCount = len(desc_pool_sizes),
+		pPoolSizes    = raw_data(desc_pool_sizes[:]),
 	}
 	vk_assert(
-		vk.CreateDescriptorPool(
-			r.gpu.device,
-			&tex_desc_pool_create_info,
-			nil,
-			&r.resources.tex_desc_pool,
-		),
+		vk.CreateDescriptorPool(r.gpu.device, &desc_pool_create_info, nil, &r.resources.desc_pool),
 	)
-	tex_desc_pool_count := u32(TEX_DESCRIPTOR_POOL_COUNT)
-	tex_desc_set_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
+	desc_pool_count := u32(TEXTURE_MAX_COUNT)
+	desc_set_alloc_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
 		sType              = .DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
 		descriptorSetCount = 1,
-		pDescriptorCounts  = &tex_desc_pool_count,
+		pDescriptorCounts  = &desc_pool_count,
 	}
-	tex_desc_set_alloc := vk.DescriptorSetAllocateInfo {
+	desc_set_alloc := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		pNext              = &tex_desc_set_alloc_info,
-		descriptorPool     = r.resources.tex_desc_pool,
+		pNext              = &desc_set_alloc_info,
+		descriptorPool     = r.resources.desc_pool,
 		descriptorSetCount = 1,
-		pSetLayouts        = &r.resources.tex_desc_set_layout,
+		pSetLayouts        = &r.resources.desc_set_layout,
 	}
-	vk_assert(
-		vk.AllocateDescriptorSets(r.gpu.device, &tex_desc_set_alloc, &r.resources.tex_desc_set),
-	)
+	vk_assert(vk.AllocateDescriptorSets(r.gpu.device, &desc_set_alloc, &r.resources.desc_set))
 
 	vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES)
 	vk_pipeline_init(
 		r.gpu.device,
 		Quad_Push_Constants,
 		Quad_Instance,
-		&r.resources.tex_desc_set_layout,
+		&r.resources.desc_set_layout,
 		r.shader_module,
 		&r.pipeline_layout,
 		&r.pipeline,
@@ -392,8 +448,8 @@ destroy :: proc(r: ^Renderer) {
 	}
 	delete(r.resources.font_faces)
 	vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
-	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.tex_desc_set_layout, nil)
-	vk.DestroyDescriptorPool(r.gpu.device, r.resources.tex_desc_pool, nil)
+	vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.desc_set_layout, nil)
+	vk.DestroyDescriptorPool(r.gpu.device, r.resources.desc_pool, nil)
 	vma.destroy_buffer(r.gpu.allocator, r.resources.index_buffer, r.resources.index_alloc)
 	vma.destroy_buffer(
 		r.gpu.allocator,
@@ -562,16 +618,7 @@ present :: proc(r: ^Renderer) {
 	}
 	vk.CmdSetViewport(cb, 0, 1, &vp)
 	vk.CmdBindPipeline(cb, .GRAPHICS, r.pipeline)
-	vk.CmdBindDescriptorSets(
-		cb,
-		.GRAPHICS,
-		r.pipeline_layout,
-		0,
-		1,
-		&r.resources.tex_desc_set,
-		0,
-		nil,
-	)
+	vk.CmdBindDescriptorSets(cb, .GRAPHICS, r.pipeline_layout, 0, 1, &r.resources.desc_set, 0, nil)
 
 	vk.CmdBindIndexBuffer(cb, r.resources.index_buffer, 0, .UINT32)
 	for &batch in fctx.draw_batches {
@@ -943,8 +990,6 @@ draw_sprite :: proc(
 	uv_rect := Rect{x = 0, y = 0, w = 1, h = 1},
 	is_additive := false,
 ) {
-	context.allocator = r.allocator
-
 	sprite := r.resources.sprites[sh.idx]
 	uv_scale := [2]f32{uv_rect.w, uv_rect.h}
 	if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
@@ -1048,7 +1093,7 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additiv
 			pos = p1,
 			scale = p2,
 			rotation = p3.x,
-			_pad0 = transmute(u32)p3.y,
+			data1 = transmute(u32)p3.y,
 			color = convert_color(color, is_additive),
 			type = u32(Quad_Instance_Type.Triangle),
 			uv_rect = {0, 0, 1, 1},
@@ -1072,6 +1117,7 @@ draw_text :: proc(
 	}
 	face := r.resources.font_faces[font.idx]
 	scale := f32(font_size) / f32(face.size)
+	sprite := r.resources.sprites[face.sprite.idx]
 
 	start_x := pos.x
 	pen_x := pos.x
@@ -1111,12 +1157,24 @@ draw_text :: proc(
 		glyph_center := [2]f32{x + (glyph.width * scale) / 2, y + (glyph.height * scale) / 2}
 
 		if glyph.width > 0 && glyph.height > 0 {
-			draw_sprite(
+			scale := [2]f32{scale, scale}
+			uv_scale := [2]f32{glyph.uv_rect.w, glyph.uv_rect.h}
+			if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
+			if uv_scale.y < 0 do uv_scale.y = -uv_scale.y
+			pixel_scale := [2]f32 {
+				scale.x * sprite.width * uv_scale.x,
+				scale.y * sprite.height * uv_scale.y,
+			}
+			_append_instance(
 				r,
-				face.sprite,
-				glyph_center,
-				scale = {scale, scale},
-				uv_rect = glyph.uv_rect,
+				Quad_Instance {
+					type = u32(Quad_Instance_Type.MSDF),
+					pos = glyph_center,
+					scale = pixel_scale,
+					texture_index = u32(sprite.texture.idx),
+					color = convert_color(color, false),
+					uv_rect = {glyph.uv_rect.x, glyph.uv_rect.y, glyph.uv_rect.w, glyph.uv_rect.h},
+				},
 			)
 		}
 
@@ -1183,7 +1241,7 @@ convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
 texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Texture_Handle {
 	context.allocator = r.allocator
 
-	if len(r.resources.textures) == TEX_DESCRIPTOR_POOL_COUNT {
+	if len(r.resources.textures) == TEXTURE_MAX_COUNT {
 		panic("maximum 1024 textures reached")
 	}
 
@@ -1297,8 +1355,8 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> Textu
 	// to the GPU so it's available to the shaders
 	write_desc_set := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.resources.tex_desc_set,
-		dstBinding      = 0,
+		dstSet          = r.resources.desc_set,
+		dstBinding      = DESC_BINDING_TEXTURES,
 		dstArrayElement = u32(idx),
 		descriptorCount = 1,
 		descriptorType  = .COMBINED_IMAGE_SAMPLER,
@@ -1459,7 +1517,7 @@ Font_Atlas_Error :: union #shared_nil {
 }
 
 // Load a font atlas which follows the Bitmap Font (BMF) Format (https://typebits.gitlab.io/bmf-format/)
-font_atlas_load :: proc(
+font_load :: proc(
 	r: ^Renderer,
 	font_atlas_json: []byte,
 	font_atlas_img: []byte,
@@ -1520,6 +1578,8 @@ font_atlas_load :: proc(
 	face.sprite = atlas_sprite
 	face.line_height = atlas.common.line_height
 	face.y_base = atlas.common.base
+	face.distance_range = atlas.distance_field.distance_range
+	face.tex_size = {atlas_img.width, atlas_img.height}
 
 	face.glyphs = make([dynamic]Font_Face_Glyph, 0, len(atlas.chars))
 	for atlas_char in atlas.chars {
@@ -1554,18 +1614,82 @@ font_atlas_load :: proc(
 		idx = len(r.resources.font_faces),
 	}
 	append(&r.resources.font_faces, face)
+	append(
+		&r.resources.quad_fonts,
+		Quad_Font {
+			px_range = u32(face.distance_range),
+			tex_size = {u32(face.tex_size.x), u32(face.tex_size.y)},
+		},
+	)
+
+	data_size := len(r.resources.font_faces) * size_of(Quad_Font)
+	mem.copy(r.resources.font_staging_buf_ptr, raw_data(r.resources.font_faces), data_size)
+	vma.flush_allocation(
+		r.gpu.allocator,
+		r.resources.font_staging_alloc,
+		0,
+		vk.DeviceSize(data_size),
+	)
+	one_time_cb := vk_one_time_cmd_buffer_begin(r.gpu.device, r.gpu.queue, r.command_pool)
+	{
+		region := vk.BufferCopy {
+			srcOffset = 0,
+			dstOffset = 0,
+			size      = vk.DeviceSize(data_size),
+		}
+		vk.CmdCopyBuffer(
+			one_time_cb.cmd,
+			r.resources.font_staging_buffer,
+			r.resources.font_device_buffer,
+			1,
+			&region,
+		)
+		dep_info := vk.DependencyInfo {
+			sType                    = .DEPENDENCY_INFO,
+			bufferMemoryBarrierCount = 1,
+			pBufferMemoryBarriers    = &vk.BufferMemoryBarrier2 {
+				sType = .BUFFER_MEMORY_BARRIER_2,
+				srcStageMask = {.TRANSFER},
+				srcAccessMask = {.TRANSFER_WRITE},
+				dstStageMask = {.VERTEX_SHADER, .FRAGMENT_SHADER},
+				buffer = r.resources.font_device_buffer,
+				offset = 0,
+				size = vk.DeviceSize(vk.WHOLE_SIZE),
+				srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+				dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			},
+		}
+		vk.CmdPipelineBarrier2(one_time_cb.cmd, &dep_info)
+	}
+	vk_one_time_cmd_buffer_end(&one_time_cb)
+	write := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = r.resources.desc_set,
+		dstBinding      = DESC_BINDING_FONTS,
+		descriptorCount = 1,
+		descriptorType  = .STORAGE_BUFFER,
+		pBufferInfo     = &vk.DescriptorBufferInfo {
+			buffer = r.resources.font_device_buffer,
+			offset = 0,
+			range = vk.DeviceSize(vk.WHOLE_SIZE),
+		},
+	}
+	vk.UpdateDescriptorSets(r.gpu.device, 1, &write, 0, nil)
+	vk_assert(vk.QueueWaitIdle(r.gpu.queue))
 
 	return
 }
 
 Font_Face :: struct {
-	sprite:        Sprite_Handle,
-	size:          int, // default size of glyphs
-	line_height:   f32,
-	y_base:        f32, // y offset (from top of line) where chars sit
-	glyph_lookup:  map[rune]int,
-	glyphs:        [dynamic]Font_Face_Glyph,
-	missing_glyph: Font_Face_Glyph,
+	sprite:         Sprite_Handle,
+	size:           int, // default size of glyphs
+	line_height:    f32,
+	y_base:         f32, // y offset (from top of line) where chars sit
+	distance_range: int,
+	tex_size:       [2]int,
+	glyph_lookup:   map[rune]int,
+	glyphs:         [dynamic]Font_Face_Glyph,
+	missing_glyph:  Font_Face_Glyph,
 }
 
 // TODO may need a Font_Face_Metrics to provide user code details like y_base,

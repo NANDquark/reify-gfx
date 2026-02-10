@@ -60,12 +60,18 @@ run :: proc() -> Error {
 	configs := []Shader_Config {
 		{
 			bytes = QUAD_SHADER_TYPES_BYTES,
-			names = {"Instance", "Shader_Data", "Push_Constants"},
+			names = {"Instance", "Font", "Shader_Data", "Push_Constants"},
 			enums = {
 				{
 					name = "Instance_Type",
 					type = Scalar_Type_UINT8,
-					values = {{"Sprite", 0}, {"Rect", 1}, {"Circle", 2}, {"Triangle", 3}},
+					values = {
+						{"Sprite", 0},
+						{"Rect", 1},
+						{"Circle", 2},
+						{"Triangle", 3},
+						{"MSDF", 4},
+					},
 				},
 			},
 			prefix = "Quad_",
@@ -289,14 +295,14 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 		row_count := type_obj["rowCount"].(json.Float)
 		col_count := type_obj["columnCount"].(json.Float)
 		element_type := type_obj["elementType"].(json.Object)
-		scalar_type := element_type["scalarType"].(json.String)
+		scalar_type := canonical_scalar_type(element_type["scalarType"].(json.String))
 		mat := new(Shader_Matrix)
 		mat.kind = .Matrix
 		mat.rows = int(row_count)
 		mat.cols = int(col_count)
 		mat.element_type = Shader_Scalar {
 			kind = .Scalar,
-			type = Scalar_Type(scalar_type),
+			type = scalar_type,
 		}
 		field = mat
 	case "pointer":
@@ -306,21 +312,48 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 		ptr.type_name = value_type
 		field = ptr
 	case "scalar":
-		scalar_type := type_obj["scalarType"].(json.String)
+		scalar_type := canonical_scalar_type(type_obj["scalarType"].(json.String))
 		scalar := new(Shader_Scalar)
 		scalar.kind = .Scalar
-		scalar.type = Scalar_Type(scalar_type)
+		scalar.type = scalar_type
 		field = scalar
 	case "vector":
-		element_count := type_obj["elementCount"].(json.Float)
-		element_type := type_obj["elementType"].(json.Object)
-		scalar_type := element_type["scalarType"].(json.String)
+		element_count := 0
+		if raw_count, ok := type_obj["elementCount"]; ok {
+			element_count = int(raw_count.(json.Float))
+		}
+
+		scalar_type: Scalar_Type
+		found_scalar_type := false
+		if raw_element_type, ok := type_obj["elementType"]; ok {
+			if element_type, element_ok := raw_element_type.(json.Object); element_ok {
+				if raw_scalar_type, scalar_ok := element_type["scalarType"]; scalar_ok {
+					scalar_type = canonical_scalar_type(raw_scalar_type.(json.String))
+					found_scalar_type = true
+				}
+			}
+		}
+
+		// Some Slang reflection outputs encode vectors by name (for example: uint32_t2).
+		if !found_scalar_type {
+			if raw_name, ok := type_obj["name"]; ok {
+				type_name := raw_name.(json.String)
+				if type_name == "uint32_t2" {
+					scalar_type = Scalar_Type_UINT32
+					found_scalar_type = true
+					if element_count == 0 do element_count = 2
+				}
+			}
+		}
+		if !found_scalar_type do panic("vector type missing scalar type information")
+		if element_count <= 0 do panic("vector type missing element count information")
+
 		vec := new(Shader_Vector)
 		vec.kind = .Vector
-		vec.len = int(element_count)
+		vec.len = element_count
 		vec.element_type = Shader_Scalar {
 			kind = .Scalar,
-			type = Scalar_Type(scalar_type),
+			type = scalar_type,
 		}
 		field = vec
 	case "struct":
@@ -332,6 +365,22 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 		field = struc
 	}
 	return field
+}
+
+canonical_scalar_type :: proc(raw_scalar_type: string) -> Scalar_Type {
+	switch raw_scalar_type {
+	case "uint8", "uint8_t":
+		return Scalar_Type_UINT8
+	case "uint16", "uint16_t":
+		return Scalar_Type_UINT16
+	case "uint32", "uint32_t":
+		return Scalar_Type_UINT32
+	case "uint64", "uint64_t":
+		return Scalar_Type_UINT64
+	case "float32", "float":
+		return Scalar_Type_FLOAT32
+	}
+	return Scalar_Type(raw_scalar_type)
 }
 
 build_odin_type :: proc(field_def: ^Shader_Field, length_override: string = "") -> string {
