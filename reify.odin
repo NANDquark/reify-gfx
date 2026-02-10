@@ -397,7 +397,6 @@ init :: proc(
 	desc_pool_sizes := [?]vk.DescriptorPoolSize {
 		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = TEXTURE_MAX_COUNT},
 		{type = .STORAGE_BUFFER, descriptorCount = FONT_MAX_COUNT},
-		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = FONT_MAX_COUNT},
 	}
 	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,

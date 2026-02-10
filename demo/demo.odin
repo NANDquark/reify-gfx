@@ -94,35 +94,35 @@ main :: proc() {
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
-		// re.draw_sprite(&renderer, tree_sprite, {0, 0})
-		// pulse := f32(math.sin(glfw.GetTime() * 2.0) + 1.0) * 0.5
-		// // little fake glow effect
-		// re.draw_sprite(
-		// 	&renderer,
-		// 	tree_sprite,
-		// 	{0, -2},
-		// 	scale = {1 + pulse * 0.25, 1 + pulse * 0.25},
-		// 	alpha = pulse,
-		// 	rgb_tint = {100, 200, 255},
-		// 	is_additive = true,
-		// )
-		// re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
-		// re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
-		// re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
-		// re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
-		// re.draw_sprite(&renderer, tilemap_sprite, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
+		re.draw_sprite(&renderer, tree_sprite, {0, 0})
+		pulse := f32(math.sin(glfw.GetTime() * 2.0) + 1.0) * 0.5
+		// little fake glow effect
+		re.draw_sprite(
+			&renderer,
+			tree_sprite,
+			{0, -2},
+			scale = {1 + pulse * 0.25, 1 + pulse * 0.25},
+			alpha = pulse,
+			rgb_tint = {100, 200, 255},
+			is_additive = true,
+		)
+		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
+		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
+		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
+		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
+		re.draw_sprite(&renderer, tilemap_sprite, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
 
 		// batch 2 - draw on the screen, not the world!
 		re.begin_screen_mode(&renderer)
-		// re.draw_circle(
-		// 	&renderer,
-		// 	{f32(window_width) / 2, f32(window_height) / 2},
-		// 	100,
-		// 	re.Color{0, 0, 0, 255},
-		// )
+		re.draw_circle(
+			&renderer,
+			{f32(window_width) / 2, f32(window_height) / 2},
+			100,
+			re.Color{0, 0, 0, 255},
+		)
 		p0 := [2]f32{f32(window_width) / 2 - 300, f32(window_height) / 2 + 200}
 		p1 := [2]f32{p0.x + 500, p0.y}
-		re.draw_text(&renderer, font, "gbc DEi	1`2~3	!-@=#\nabcdefghijklmnopqrstuvwxyz", p0, 14)
+		re.draw_text(&renderer, font, "gbc DEi	1`2~3	!-@=#\nabcdefghijklmnopqrstuvwxyz", p0, 42)
 		re.end_screen_mode(&renderer)
 
 		re.present(&renderer)
