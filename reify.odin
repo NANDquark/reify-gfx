@@ -995,9 +995,8 @@ gpu_destroy :: proc(gctx: ^GPU_Context) {
 	vk.DestroyInstance(gctx.instance, nil)
 }
 
+@(private)
 _append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
-	context.allocator = r.allocator
-
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.shader_data.instances[fctx.total_instances] = instance
 	fctx.total_instances += 1
@@ -1050,8 +1049,6 @@ draw_rect :: proc(
 	rotation: f32 = 0,
 	is_additive := false,
 ) {
-	context.allocator = r.allocator
-
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -1074,8 +1071,6 @@ draw_line :: proc(
 	rounded := false,
 	is_additive := false,
 ) {
-	context.allocator = r.allocator
-
 	if thickness <= 0 do return
 
 	center_pos := (p0 + p1) * 0.5
@@ -1099,8 +1094,6 @@ draw_circle :: proc(
 	color: Color,
 	is_additive := false,
 ) {
-	context.allocator = r.allocator
-
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -1114,8 +1107,6 @@ draw_circle :: proc(
 }
 
 draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additive := false) {
-	context.allocator = r.allocator
-
 	_append_instance(
 		r,
 		Quad_Instance {
@@ -1138,40 +1129,128 @@ draw_text :: proc(
 	font_size: int,
 	color := Color{255, 255, 255, 255},
 	spaces_per_tab := 4,
+	allocator := context.allocator,
 ) {
-	context.allocator = r.allocator
+	context.allocator = allocator
+
+	layout := layout_text(r, font, text, pos, font_size, spaces_per_tab, r.allocator)
+	defer delete(layout.quads)
 
 	if font.idx > len(r.resources.font_faces) - 1 {
 		return
 	}
 	face := r.resources.font_faces[font.idx]
-	scale := f32(font_size) / f32(face.size)
+	text_color := convert_color(color, false)
+	for quad in layout.quads {
+		_append_instance(
+			r,
+			Quad_Instance {
+				type = u32(Quad_Instance_Type.MSDF),
+				pos = quad.pos,
+				scale = quad.scale,
+				color = text_color,
+				uv_rect = {quad.uv_rect.x, quad.uv_rect.y, quad.uv_rect.w, quad.uv_rect.h},
+				texture_index = u32(face.texture.idx),
+				data1 = u32(font.idx),
+			},
+		)
+	}
+}
+
+measure_text :: proc(
+	r: ^Renderer,
+	font: Font_Face_Handle,
+	text: string,
+	pos: [2]f32,
+	font_size: int,
+	spaces_per_tab := 4,
+	allocator := context.allocator,
+) -> Rect {
+	context.allocator = allocator
+
+	layout := layout_text(r, font, text, pos, font_size, spaces_per_tab, r.allocator)
+	defer delete(layout.quads)
+
+	return layout.bounds
+}
+
+Text_Layout_Quad :: struct {
+	pos:     [2]f32,
+	scale:   [2]f32,
+	uv_rect: Rect,
+}
+
+Text_Layout :: struct {
+	quads:  [dynamic]Text_Layout_Quad,
+	bounds: Rect,
+}
+
+layout_text :: proc(
+	r: ^Renderer,
+	font: Font_Face_Handle,
+	text: string,
+	pos: [2]f32,
+	font_size: int,
+	spaces_per_tab := 4,
+	allocator := context.allocator,
+) -> Text_Layout {
+	context.allocator = allocator
+
+	layout := Text_Layout {
+		bounds = Rect{x = pos.x, y = pos.y, w = 0, h = 0},
+	}
+
+	if font_size <= 0 || len(text) == 0 {
+		return layout
+	}
+	if font.idx > len(r.resources.font_faces) - 1 {
+		return layout
+	}
+
+	face := r.resources.font_faces[font.idx]
+	glyph_scale := f32(font_size) / f32(face.size)
+	layout.quads = make([dynamic]Text_Layout_Quad, 0, len(text))
+
+	space_glyph, space_exists := _font_get_glyph(r, font, ' ')
+	space_advance := 0.25 * face.line_height * glyph_scale // fallback
+	if space_exists {
+		space_advance = space_glyph.x_advance * glyph_scale
+	}
+	tab_advance := f32(spaces_per_tab) * space_advance
 
 	start_x := pos.x
 	pen_x := pos.x
 	pen_y := pos.y // baseline (where the letters sit)
 
+	min_x := start_x
+	max_x := start_x
+	line_top := pen_y - face.y_base * glyph_scale
+	line_bottom := line_top + face.line_height * glyph_scale
+	min_y := line_top
+	max_y := line_bottom
+	has_content := false
+
 	for rr in text {
 		switch rr {
 		case '\n':
+			has_content = true
+			if pen_x > max_x do max_x = pen_x
 			pen_x = start_x
-			pen_y += face.line_height * scale
+			pen_y += face.line_height * glyph_scale
+			line_top = pen_y - face.y_base * glyph_scale
+			line_bottom = line_top + face.line_height * glyph_scale
+			if line_top < min_y do min_y = line_top
+			if line_bottom > max_y do max_y = line_bottom
 			continue
 		case '\t':
-			space_glyph, space_exists := _font_get_glyph(r, font, ' ')
-			if !space_exists {
-				pen_x += f32(spaces_per_tab) * 0.25 * face.line_height * scale // fallback
-			} else {
-				pen_x += f32(spaces_per_tab) * space_glyph.x_advance * scale
-			}
+			pen_x += tab_advance
+			has_content = true
+			if pen_x > max_x do max_x = pen_x
 			continue
 		case ' ':
-			space_glyph, space_exists := _font_get_glyph(r, font, ' ')
-			if !space_exists {
-				pen_x += 0.25 * face.line_height * scale // fallback
-			} else {
-				pen_x += space_glyph.x_advance * scale
-			}
+			pen_x += space_advance
+			has_content = true
+			if pen_x > max_x do max_x = pen_x
 			continue
 		}
 
@@ -1180,39 +1259,54 @@ draw_text :: proc(
 			continue
 		}
 
-		x := pen_x + glyph.x_offset * scale
-		y := pen_y - face.y_base * scale + glyph.y_offset * scale
-		// snap x, y to pixel grid so small font sizes render a bit clearer
-		glyph_center := [2]f32 {
-			math.round(x) + glyph.width * scale * 0.5,
-			math.round(y) + glyph.height * scale * 0.5,
-		}
+		x := pen_x + glyph.x_offset * glyph_scale
+		y := pen_y - face.y_base * glyph_scale + glyph.y_offset * glyph_scale
+		snapped_x := math.round(x)
+		snapped_y := math.round(y)
 
 		if glyph.width > 0 && glyph.height > 0 {
-			scale := [2]f32{scale, scale}
+			glyph_center := [2]f32 {
+				snapped_x + glyph.width * glyph_scale * 0.5,
+				snapped_y + glyph.height * glyph_scale * 0.5,
+			}
 			uv_scale := [2]f32{glyph.uv_rect.w, glyph.uv_rect.h}
 			if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
 			if uv_scale.y < 0 do uv_scale.y = -uv_scale.y
 			pixel_scale := [2]f32 {
-				scale.x * f32(face.tex_size.x) * uv_scale.x,
-				scale.y * f32(face.tex_size.y) * uv_scale.y,
+				glyph_scale * f32(face.tex_size.x) * uv_scale.x,
+				glyph_scale * f32(face.tex_size.y) * uv_scale.y,
 			}
-			_append_instance(
-				r,
-				Quad_Instance {
-					type = u32(Quad_Instance_Type.MSDF),
-					pos = glyph_center,
-					scale = pixel_scale,
-					color = convert_color(color, false),
-					uv_rect = {glyph.uv_rect.x, glyph.uv_rect.y, glyph.uv_rect.w, glyph.uv_rect.h},
-					texture_index = u32(face.texture.idx),
-					data1 = u32(font.idx),
-				},
+			append(
+				&layout.quads,
+				Text_Layout_Quad{pos = glyph_center, scale = pixel_scale, uv_rect = glyph.uv_rect},
 			)
+
+			glyph_min_x := snapped_x
+			glyph_min_y := snapped_y
+			glyph_max_x := snapped_x + glyph.width * glyph_scale
+			glyph_max_y := snapped_y + glyph.height * glyph_scale
+			if glyph_min_x < min_x do min_x = glyph_min_x
+			if glyph_min_y < min_y do min_y = glyph_min_y
+			if glyph_max_x > max_x do max_x = glyph_max_x
+			if glyph_max_y > max_y do max_y = glyph_max_y
 		}
 
-		pen_x += glyph.x_advance * scale
+		pen_x += glyph.x_advance * glyph_scale
+		has_content = true
+		if pen_x > max_x do max_x = pen_x
 	}
+
+	if !has_content {
+		return layout
+	}
+
+	layout.bounds = Rect {
+		x = min_x,
+		y = min_y,
+		w = max_x - min_x,
+		h = max_y - min_y,
+	}
+	return layout
 }
 
 // Set the scissor/clip in SCREEN SPACE
