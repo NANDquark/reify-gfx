@@ -92,6 +92,13 @@ Frame_Context :: struct {
 	draw_batches:           [dynamic]Draw_Batch,
 }
 
+Shader_Data_Buffer :: struct {
+	alloc:       vma.Allocation,
+	buffer:      vk.Buffer,
+	device_addr: vk.DeviceAddress,
+	mapped:      rawptr,
+}
+
 Draw_Batch :: struct {
 	scissor:         vk.Rect2D,
 	index_offset:    int,
@@ -102,6 +109,14 @@ Draw_Batch :: struct {
 Projection_Type :: enum {
 	World, // Default
 	Screen,
+}
+
+Mat4f :: matrix[4, 4]f32
+
+Color :: [4]u8
+
+Rect :: struct {
+	x, y, w, h: f32,
 }
 
 init :: proc(
@@ -496,6 +511,251 @@ destroy :: proc(r: ^Renderer) {
 	gpu_destroy(&r.gpu)
 }
 
+@(private)
+swapchain_context_init :: proc(
+	sc: ^Swapchain_Context,
+	gpu: ^GPU_Context,
+	surface: vk.SurfaceKHR,
+	surface_caps: vk.SurfaceCapabilitiesKHR,
+	window_width, window_height: i32,
+	recreate := false,
+	allocator := context.allocator,
+) {
+	context.allocator = allocator
+
+	sc.gpu = gpu
+
+	if recreate {
+		for swi in sc.views {
+			vk.DestroyImageView(sc.gpu.device, swi, nil)
+		}
+	}
+
+	sc.create_info = vk.SwapchainCreateInfoKHR {
+		sType = .SWAPCHAIN_CREATE_INFO_KHR,
+		surface = surface,
+		minImageCount = surface_caps.minImageCount,
+		imageFormat = IMAGE_FORMAT,
+		imageColorSpace = .COLORSPACE_SRGB_NONLINEAR,
+		// surface extent had max int width/height since it was uninitialized
+		imageExtent = vk.Extent2D{width = u32(window_width), height = u32(window_height)},
+		imageArrayLayers = 1,
+		imageUsage = {.COLOR_ATTACHMENT},
+		preTransform = {.IDENTITY},
+		compositeAlpha = {.OPAQUE},
+		presentMode = .FIFO,
+		oldSwapchain = sc.handle if recreate else {},
+	}
+	vk_assert(vk.CreateSwapchainKHR(sc.gpu.device, &sc.create_info, nil, &sc.handle))
+
+
+	swapchain_image_count: u32
+	vk_assert(vk.GetSwapchainImagesKHR(sc.gpu.device, sc.handle, &swapchain_image_count, nil))
+	resize(&sc.images, swapchain_image_count)
+	vk_assert(
+		vk.GetSwapchainImagesKHR(
+			sc.gpu.device,
+			sc.handle,
+			&swapchain_image_count,
+			raw_data(sc.images),
+		),
+	)
+	resize(&sc.views, int(swapchain_image_count))
+	for i in 0 ..< swapchain_image_count {
+		view_create_info := vk.ImageViewCreateInfo {
+			sType = .IMAGE_VIEW_CREATE_INFO,
+			image = sc.images[i],
+			viewType = .D2,
+			format = IMAGE_FORMAT,
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+		vk_assert(vk.CreateImageView(sc.gpu.device, &view_create_info, nil, &sc.views[i]))
+	}
+
+	if recreate {
+		// must be destroyed after the new swapchain is created w/ the oldSwapchain passed in so the drivers can be clever and reuse internal resources to reduce the cost of a new swapchain
+		vk.DestroySwapchainKHR(sc.gpu.device, sc.create_info.oldSwapchain, nil)
+	}
+}
+
+@(private)
+swapchain_context_destroy :: proc(
+	sc: ^Swapchain_Context,
+	device: vk.Device,
+	allocator := context.allocator,
+) {
+	context.allocator = allocator
+
+	// The images in sc.images should not be destroyed because they are owned by
+	// the swapchain and are released by vk.DestroySwapchainKHR
+	delete(sc.images)
+	for iv in sc.views {
+		vk.DestroyImageView(device, iv, nil)
+	}
+	delete(sc.views)
+	for s in sc.render_semaphores {
+		vk.DestroySemaphore(device, s, nil)
+	}
+	delete(sc.render_semaphores)
+	vk.DestroySwapchainKHR(device, sc.handle, nil)
+}
+
+@(private)
+gpu_init :: proc(dctx: ^GPU_Context, allocator := context.allocator) {
+	context.allocator = allocator
+
+	app_info := &vk.ApplicationInfo {
+		sType = .APPLICATION_INFO,
+		pApplicationName = "Reify",
+		apiVersion = vk.API_VERSION_1_3,
+	}
+	instance_extensions := make([dynamic]cstring, context.temp_allocator)
+	append(&instance_extensions, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)
+	append(&instance_extensions, ..glfw.GetRequiredInstanceExtensions())
+	count: u32
+	vk.EnumerateInstanceLayerProperties(&count, nil)
+	layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
+	vk.EnumerateInstanceLayerProperties(&count, raw_data(layers_properties))
+	desired_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
+	enabled_layers := make([dynamic]cstring, context.temp_allocator)
+	for desired in desired_layers {
+		found := false
+		for &prop in layers_properties {
+			if desired == cstring(&prop.layerName[0]) {
+				found = true
+				break
+			}
+		}
+		if found {
+			append(&enabled_layers, desired)
+		} else {
+			fmt.printf("Warning: Layer %s not found. Skipping...\n", desired)
+		}
+	}
+	instance_create_info := &vk.InstanceCreateInfo {
+		sType                   = .INSTANCE_CREATE_INFO,
+		pApplicationInfo        = app_info,
+		enabledExtensionCount   = u32(len(instance_extensions)),
+		ppEnabledExtensionNames = raw_data(instance_extensions),
+		enabledLayerCount       = u32(len(enabled_layers)), // Now dynamically 0 or 1
+		ppEnabledLayerNames     = raw_data(enabled_layers),
+	}
+	vk_assert(vk.CreateInstance(instance_create_info, nil, &dctx.instance))
+	vk.load_proc_addresses(dctx.instance)
+
+	// SELECT DEVICE
+	device_count: u32
+	vk_assert(vk.EnumeratePhysicalDevices(dctx.instance, &device_count, nil))
+	phys_devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
+	vk_assert(vk.EnumeratePhysicalDevices(dctx.instance, &device_count, raw_data(phys_devices)))
+	assert(len(phys_devices) > 0, "physical device required")
+	dctx.physical = vk_select_phys_device(phys_devices)
+
+	// SETUP QUEUE
+	queue_family_count: u32
+	vk.GetPhysicalDeviceQueueFamilyProperties(dctx.physical, &queue_family_count, nil)
+	queue_families := make([]vk.QueueFamilyProperties, queue_family_count, context.temp_allocator)
+	vk.GetPhysicalDeviceQueueFamilyProperties(
+		dctx.physical,
+		&queue_family_count,
+		raw_data(queue_families),
+	)
+	for i in 0 ..< len(queue_families) {
+		if .GRAPHICS in queue_families[i].queueFlags {
+			dctx.queue_family = u32(i)
+			break
+		}
+	}
+	queue_familiy_priorities: f32 = 1.0
+	queue_create_info := vk.DeviceQueueCreateInfo {
+		sType            = .DEVICE_QUEUE_CREATE_INFO,
+		queueFamilyIndex = dctx.queue_family,
+		queueCount       = 1,
+		pQueuePriorities = &queue_familiy_priorities,
+	}
+
+	// SETUP DEVICE
+	device_extensions := []cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
+	enabled_vk10_features := vk.PhysicalDeviceFeatures {
+		samplerAnisotropy = true,
+	}
+	enabled_vk11_features := vk.PhysicalDeviceVulkan11Features {
+		sType                = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		shaderDrawParameters = true,
+	}
+	enabled_vk12_features := vk.PhysicalDeviceVulkan12Features {
+		sType                                    = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		pNext                                    = &enabled_vk11_features,
+		descriptorIndexing                       = true,
+		descriptorBindingVariableDescriptorCount = true,
+		runtimeDescriptorArray                   = true,
+		bufferDeviceAddress                      = true,
+	}
+	enabled_vk13_features := vk.PhysicalDeviceVulkan13Features {
+		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		pNext            = &enabled_vk12_features,
+		synchronization2 = true,
+		dynamicRendering = true,
+	}
+
+	device_create_info := vk.DeviceCreateInfo {
+		sType                   = .DEVICE_CREATE_INFO,
+		pNext                   = &enabled_vk13_features,
+		queueCreateInfoCount    = 1,
+		pQueueCreateInfos       = &queue_create_info,
+		enabledExtensionCount   = u32(len(device_extensions)),
+		ppEnabledExtensionNames = raw_data(device_extensions),
+		pEnabledFeatures        = &enabled_vk10_features,
+	}
+	vk_assert(vk.CreateDevice(dctx.physical, &device_create_info, nil, &dctx.device))
+	vk.GetDeviceQueue(dctx.device, dctx.queue_family, 0, &dctx.queue)
+	vk.load_proc_addresses(dctx.device)
+
+	// SETUP VMA
+	vk_functions := vma.Vulkan_Functions {
+		get_physical_device_properties        = vk.GetPhysicalDeviceProperties,
+		get_physical_device_memory_properties = vk.GetPhysicalDeviceMemoryProperties,
+		allocate_memory                       = vk.AllocateMemory,
+		free_memory                           = vk.FreeMemory,
+		map_memory                            = vk.MapMemory,
+		unmap_memory                          = vk.UnmapMemory,
+		flush_mapped_memory_ranges            = vk.FlushMappedMemoryRanges,
+		invalidate_mapped_memory_ranges       = vk.InvalidateMappedMemoryRanges,
+		bind_buffer_memory                    = vk.BindBufferMemory,
+		bind_image_memory                     = vk.BindImageMemory,
+		get_buffer_memory_requirements        = vk.GetBufferMemoryRequirements,
+		get_image_memory_requirements         = vk.GetImageMemoryRequirements,
+		create_buffer                         = vk.CreateBuffer,
+		destroy_buffer                        = vk.DestroyBuffer,
+		create_image                          = vk.CreateImage,
+		destroy_image                         = vk.DestroyImage,
+		cmd_copy_buffer                       = vk.CmdCopyBuffer,
+	}
+	allocator_create_info := vma.Allocator_Create_Info {
+		flags            = {.Buffer_Device_Address},
+		physical_device  = dctx.physical,
+		device           = dctx.device,
+		vulkan_functions = &vk_functions,
+		instance         = dctx.instance,
+	}
+	vk_assert(vma.create_allocator(allocator_create_info, &dctx.allocator))
+}
+
+@(private)
+gpu_destroy :: proc(gctx: ^GPU_Context) {
+	vma.destroy_allocator(gctx.allocator)
+	vk.DestroyDevice(gctx.device, nil)
+	vk.DestroyInstance(gctx.instance, nil)
+}
+
+@(private)
+_append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
+	fctx := &r.frame_contexts[r.frame_index]
+	fctx.shader_data.instances[fctx.total_instances] = instance
+	fctx.total_instances += 1
+	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
+}
+
 start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame_Context {
 	context.allocator = r.allocator
 
@@ -744,15 +1004,6 @@ present :: proc(r: ^Renderer) {
 	}
 }
 
-Shader_Data_Buffer :: struct {
-	alloc:       vma.Allocation,
-	buffer:      vk.Buffer,
-	device_addr: vk.DeviceAddress,
-	mapped:      rawptr,
-}
-
-Mat4f :: matrix[4, 4]f32
-
 window_resize :: proc(r: ^Renderer, width, height: i32) {
 	context.allocator = r.allocator
 
@@ -760,251 +1011,6 @@ window_resize :: proc(r: ^Renderer, width, height: i32) {
 	r.window.height = height
 	r.window.projection = vk_ortho_projection(0, f32(width), 0, f32(height), -1, 1)
 	r.swapchain.needs_update = true
-}
-
-swapchain_context_init :: proc(
-	sc: ^Swapchain_Context,
-	gpu: ^GPU_Context,
-	surface: vk.SurfaceKHR,
-	surface_caps: vk.SurfaceCapabilitiesKHR,
-	window_width, window_height: i32,
-	recreate := false,
-	allocator := context.allocator,
-) {
-	context.allocator = allocator
-
-	sc.gpu = gpu
-
-	if recreate {
-		for swi in sc.views {
-			vk.DestroyImageView(sc.gpu.device, swi, nil)
-		}
-	}
-
-	sc.create_info = vk.SwapchainCreateInfoKHR {
-		sType = .SWAPCHAIN_CREATE_INFO_KHR,
-		surface = surface,
-		minImageCount = surface_caps.minImageCount,
-		imageFormat = IMAGE_FORMAT,
-		imageColorSpace = .COLORSPACE_SRGB_NONLINEAR,
-		// surface extent had max int width/height since it was uninitialized
-		imageExtent = vk.Extent2D{width = u32(window_width), height = u32(window_height)},
-		imageArrayLayers = 1,
-		imageUsage = {.COLOR_ATTACHMENT},
-		preTransform = {.IDENTITY},
-		compositeAlpha = {.OPAQUE},
-		presentMode = .FIFO,
-		oldSwapchain = sc.handle if recreate else {},
-	}
-	vk_assert(vk.CreateSwapchainKHR(sc.gpu.device, &sc.create_info, nil, &sc.handle))
-
-
-	swapchain_image_count: u32
-	vk_assert(vk.GetSwapchainImagesKHR(sc.gpu.device, sc.handle, &swapchain_image_count, nil))
-	resize(&sc.images, swapchain_image_count)
-	vk_assert(
-		vk.GetSwapchainImagesKHR(
-			sc.gpu.device,
-			sc.handle,
-			&swapchain_image_count,
-			raw_data(sc.images),
-		),
-	)
-	resize(&sc.views, int(swapchain_image_count))
-	for i in 0 ..< swapchain_image_count {
-		view_create_info := vk.ImageViewCreateInfo {
-			sType = .IMAGE_VIEW_CREATE_INFO,
-			image = sc.images[i],
-			viewType = .D2,
-			format = IMAGE_FORMAT,
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-		}
-		vk_assert(vk.CreateImageView(sc.gpu.device, &view_create_info, nil, &sc.views[i]))
-	}
-
-	if recreate {
-		// must be destroyed after the new swapchain is created w/ the oldSwapchain passed in so the drivers can be clever and reuse internal resources to reduce the cost of a new swapchain
-		vk.DestroySwapchainKHR(sc.gpu.device, sc.create_info.oldSwapchain, nil)
-	}
-}
-
-swapchain_context_destroy :: proc(
-	sc: ^Swapchain_Context,
-	device: vk.Device,
-	allocator := context.allocator,
-) {
-	context.allocator = allocator
-
-	// The images in sc.images should not be destroyed because they are owned by
-	// the swapchain and are released by vk.DestroySwapchainKHR
-	delete(sc.images)
-	for iv in sc.views {
-		vk.DestroyImageView(device, iv, nil)
-	}
-	delete(sc.views)
-	for s in sc.render_semaphores {
-		vk.DestroySemaphore(device, s, nil)
-	}
-	delete(sc.render_semaphores)
-	vk.DestroySwapchainKHR(device, sc.handle, nil)
-}
-
-gpu_init :: proc(dctx: ^GPU_Context, allocator := context.allocator) {
-	context.allocator = allocator
-
-	app_info := &vk.ApplicationInfo {
-		sType = .APPLICATION_INFO,
-		pApplicationName = "Reify",
-		apiVersion = vk.API_VERSION_1_3,
-	}
-	instance_extensions := make([dynamic]cstring, context.temp_allocator)
-	append(&instance_extensions, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)
-	append(&instance_extensions, ..glfw.GetRequiredInstanceExtensions())
-	count: u32
-	vk.EnumerateInstanceLayerProperties(&count, nil)
-	layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
-	vk.EnumerateInstanceLayerProperties(&count, raw_data(layers_properties))
-	desired_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
-	enabled_layers := make([dynamic]cstring, context.temp_allocator)
-	for desired in desired_layers {
-		found := false
-		for &prop in layers_properties {
-			if desired == cstring(&prop.layerName[0]) {
-				found = true
-				break
-			}
-		}
-		if found {
-			append(&enabled_layers, desired)
-		} else {
-			fmt.printf("Warning: Layer %s not found. Skipping...\n", desired)
-		}
-	}
-	instance_create_info := &vk.InstanceCreateInfo {
-		sType                   = .INSTANCE_CREATE_INFO,
-		pApplicationInfo        = app_info,
-		enabledExtensionCount   = u32(len(instance_extensions)),
-		ppEnabledExtensionNames = raw_data(instance_extensions),
-		enabledLayerCount       = u32(len(enabled_layers)), // Now dynamically 0 or 1
-		ppEnabledLayerNames     = raw_data(enabled_layers),
-	}
-	vk_assert(vk.CreateInstance(instance_create_info, nil, &dctx.instance))
-	vk.load_proc_addresses(dctx.instance)
-
-	// SELECT DEVICE
-	device_count: u32
-	vk_assert(vk.EnumeratePhysicalDevices(dctx.instance, &device_count, nil))
-	phys_devices := make([]vk.PhysicalDevice, device_count, context.temp_allocator)
-	vk_assert(vk.EnumeratePhysicalDevices(dctx.instance, &device_count, raw_data(phys_devices)))
-	assert(len(phys_devices) > 0, "physical device required")
-	dctx.physical = vk_select_phys_device(phys_devices)
-
-	// SETUP QUEUE
-	queue_family_count: u32
-	vk.GetPhysicalDeviceQueueFamilyProperties(dctx.physical, &queue_family_count, nil)
-	queue_families := make([]vk.QueueFamilyProperties, queue_family_count, context.temp_allocator)
-	vk.GetPhysicalDeviceQueueFamilyProperties(
-		dctx.physical,
-		&queue_family_count,
-		raw_data(queue_families),
-	)
-	for i in 0 ..< len(queue_families) {
-		if .GRAPHICS in queue_families[i].queueFlags {
-			dctx.queue_family = u32(i)
-			break
-		}
-	}
-	queue_familiy_priorities: f32 = 1.0
-	queue_create_info := vk.DeviceQueueCreateInfo {
-		sType            = .DEVICE_QUEUE_CREATE_INFO,
-		queueFamilyIndex = dctx.queue_family,
-		queueCount       = 1,
-		pQueuePriorities = &queue_familiy_priorities,
-	}
-
-	// SETUP DEVICE
-	device_extensions := []cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
-	enabled_vk10_features := vk.PhysicalDeviceFeatures {
-		samplerAnisotropy = true,
-	}
-	enabled_vk11_features := vk.PhysicalDeviceVulkan11Features {
-		sType                = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-		shaderDrawParameters = true,
-	}
-	enabled_vk12_features := vk.PhysicalDeviceVulkan12Features {
-		sType                                    = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		pNext                                    = &enabled_vk11_features,
-		descriptorIndexing                       = true,
-		descriptorBindingVariableDescriptorCount = true,
-		runtimeDescriptorArray                   = true,
-		bufferDeviceAddress                      = true,
-	}
-	enabled_vk13_features := vk.PhysicalDeviceVulkan13Features {
-		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-		pNext            = &enabled_vk12_features,
-		synchronization2 = true,
-		dynamicRendering = true,
-	}
-
-	device_create_info := vk.DeviceCreateInfo {
-		sType                   = .DEVICE_CREATE_INFO,
-		pNext                   = &enabled_vk13_features,
-		queueCreateInfoCount    = 1,
-		pQueueCreateInfos       = &queue_create_info,
-		enabledExtensionCount   = u32(len(device_extensions)),
-		ppEnabledExtensionNames = raw_data(device_extensions),
-		pEnabledFeatures        = &enabled_vk10_features,
-	}
-	vk_assert(vk.CreateDevice(dctx.physical, &device_create_info, nil, &dctx.device))
-	vk.GetDeviceQueue(dctx.device, dctx.queue_family, 0, &dctx.queue)
-	vk.load_proc_addresses(dctx.device)
-
-	// SETUP VMA
-	vk_functions := vma.Vulkan_Functions {
-		get_physical_device_properties        = vk.GetPhysicalDeviceProperties,
-		get_physical_device_memory_properties = vk.GetPhysicalDeviceMemoryProperties,
-		allocate_memory                       = vk.AllocateMemory,
-		free_memory                           = vk.FreeMemory,
-		map_memory                            = vk.MapMemory,
-		unmap_memory                          = vk.UnmapMemory,
-		flush_mapped_memory_ranges            = vk.FlushMappedMemoryRanges,
-		invalidate_mapped_memory_ranges       = vk.InvalidateMappedMemoryRanges,
-		bind_buffer_memory                    = vk.BindBufferMemory,
-		bind_image_memory                     = vk.BindImageMemory,
-		get_buffer_memory_requirements        = vk.GetBufferMemoryRequirements,
-		get_image_memory_requirements         = vk.GetImageMemoryRequirements,
-		create_buffer                         = vk.CreateBuffer,
-		destroy_buffer                        = vk.DestroyBuffer,
-		create_image                          = vk.CreateImage,
-		destroy_image                         = vk.DestroyImage,
-		cmd_copy_buffer                       = vk.CmdCopyBuffer,
-	}
-	allocator_create_info := vma.Allocator_Create_Info {
-		flags            = {.Buffer_Device_Address},
-		physical_device  = dctx.physical,
-		device           = dctx.device,
-		vulkan_functions = &vk_functions,
-		instance         = dctx.instance,
-	}
-	vk_assert(vma.create_allocator(allocator_create_info, &dctx.allocator))
-}
-
-gpu_destroy :: proc(gctx: ^GPU_Context) {
-	vma.destroy_allocator(gctx.allocator)
-	vk.DestroyDevice(gctx.device, nil)
-	vk.DestroyInstance(gctx.instance, nil)
-}
-
-@(private)
-_append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
-	fctx := &r.frame_contexts[r.frame_index]
-	fctx.shader_data.instances[fctx.total_instances] = instance
-	fctx.total_instances += 1
-	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
-}
-
-Rect :: struct {
-	x, y, w, h: f32,
 }
 
 draw_sprite :: proc(
@@ -1211,7 +1217,7 @@ layout_text :: proc(
 	glyph_scale := f32(font_size) / f32(face.size)
 	layout.quads = make([dynamic]Text_Layout_Quad, 0, len(text))
 
-	space_glyph, space_exists := _font_get_glyph(r, font, ' ')
+	space_glyph, space_exists := font_face_get_glyph(r, font, ' ')
 	space_advance := 0.25 * face.line_height * glyph_scale // fallback
 	if space_exists {
 		space_advance = space_glyph.x_advance * glyph_scale
@@ -1254,7 +1260,7 @@ layout_text :: proc(
 			continue
 		}
 
-		glyph, glyph_exists := _font_get_glyph(r, font, rr)
+		glyph, glyph_exists := font_face_get_glyph(r, font, rr)
 		if !glyph_exists {
 			continue
 		}
@@ -1312,7 +1318,6 @@ layout_text :: proc(
 // Set the scissor/clip in SCREEN SPACE
 set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 	context.allocator = r.allocator
-
 	fctx := &r.frame_contexts[r.frame_index]
 	append(
 		&fctx.draw_batches,
@@ -1328,22 +1333,11 @@ set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 // Reset the scissor/clip back to the full window
 clear_scissor :: proc(r: ^Renderer) {
 	context.allocator = r.allocator
-
 	set_scissor(r, 0, 0, u32(r.window.width), u32(r.window.height))
 }
 
-Texture :: struct {
-	alloc: vma.Allocation,
-	image: vk.Image,
-	view:  vk.ImageView,
-}
-
-Texture_Handle :: struct {
-	idx: int,
-}
-
-Color :: [4]u8
-
+// Convert color to the pre-multiplied alpha form necessary for shaders
+@(private)
 convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
 	r := f32(color.r) / 255.0
 	g := f32(color.g) / 255.0
@@ -1360,6 +1354,17 @@ convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
 	} else {
 		return {r, g, b, a}
 	}
+}
+
+@(private)
+Texture :: struct {
+	alloc: vma.Allocation,
+	image: vk.Image,
+	view:  vk.ImageView,
+}
+
+Texture_Handle :: struct {
+	idx: int,
 }
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
@@ -1516,7 +1521,6 @@ texture_load :: proc(
 
 	return Texture_Handle{idx = idx}
 }
-
 
 Sprite :: struct {
 	texture: Texture_Handle,
@@ -1824,7 +1828,7 @@ Font_Face_Handle :: struct {
 	idx: int,
 }
 
-_font_get_glyph :: proc(
+font_face_get_glyph :: proc(
 	r: ^Renderer,
 	handle: Font_Face_Handle,
 	char: rune,
