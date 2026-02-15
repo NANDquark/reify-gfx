@@ -835,7 +835,7 @@ end_screen_mode :: proc(r: ^Renderer) {
 	)
 }
 
-present :: proc(r: ^Renderer) {
+present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 	context.allocator = r.allocator
 
 	fctx := &r.frame_contexts[r.frame_index]
@@ -900,7 +900,7 @@ present :: proc(r: ^Renderer) {
 		imageLayout = .ATTACHMENT_OPTIMAL,
 		loadOp = .CLEAR,
 		storeOp = .STORE,
-		clearValue = {color = {float32 = {0, 0, 0.2, 1}}},
+		clearValue = {color = {float32 = convert_color_f32(clear_color)}},
 	}
 	// dynamic rendering
 	rendering_info := vk.RenderingInfo {
@@ -1053,7 +1053,7 @@ draw_sprite :: proc(
 			scale = pixel_scale,
 			rotation = rotation,
 			texture_index = u32(sprite.texture.idx),
-			color = convert_color(color, is_additive),
+			color = convert_color_pma(color, is_additive),
 			type = u32(Quad_Instance_Type.Sprite),
 			uv_rect = {uv_rect.x, uv_rect.y, uv_rect.w, uv_rect.h},
 		},
@@ -1074,7 +1074,7 @@ draw_rect :: proc(
 			pos = position,
 			scale = {width, height},
 			rotation = rotation,
-			color = convert_color(color, is_additive),
+			color = convert_color_pma(color, is_additive),
 			type = u32(Quad_Instance_Type.Rect),
 			uv_rect = {0, 0, 1, 1},
 		},
@@ -1118,7 +1118,7 @@ draw_circle :: proc(
 		Quad_Instance {
 			pos = position,
 			scale = {radius, radius},
-			color = convert_color(color, is_additive),
+			color = convert_color_pma(color, is_additive),
 			type = u32(Quad_Instance_Type.Circle),
 			uv_rect = {0, 0, 1, 1},
 		},
@@ -1133,7 +1133,7 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color, is_additiv
 			scale = p2,
 			rotation = p3.x,
 			data1 = transmute(u32)p3.y,
-			color = convert_color(color, is_additive),
+			color = convert_color_pma(color, is_additive),
 			type = u32(Quad_Instance_Type.Triangle),
 			uv_rect = {0, 0, 1, 1},
 		},
@@ -1159,7 +1159,7 @@ draw_text :: proc(
 		return
 	}
 	face := r.resources.font_faces[font.idx]
-	text_color := convert_color(color, false)
+	text_color := convert_color_pma(color, false)
 	for quad in layout.quads {
 		_append_instance(
 			r,
@@ -1349,23 +1349,24 @@ clear_scissor :: proc(r: ^Renderer) {
 	set_scissor(r, 0, 0, u32(r.window.width), u32(r.window.height))
 }
 
+convert_color_f32 :: proc(color: Color) -> [4]f32 {
+	return {f32(color.r) / 255, f32(color.g) / 255, f32(color.b) / 255, f32(color.a) / 255}
+}
+
 // Convert color to the pre-multiplied alpha form necessary for shaders
 @(private)
-convert_color :: proc(color: Color, is_additive := false) -> [4]f32 {
-	r := f32(color.r) / 255.0
-	g := f32(color.g) / 255.0
-	b := f32(color.b) / 255.0
-	a := f32(color.a) / 255.0
+convert_color_pma :: proc(color: Color, is_additive := false) -> [4]f32 {
+	color_f := convert_color_f32(color)
 
 	// pre-multiply alpha
-	r *= a
-	g *= a
-	b *= a
+	color_f.r *= color_f.a
+	color_f.g *= color_f.a
+	color_f.b *= color_f.a
 
 	if is_additive {
-		return {r, g, b, 0}
+		return {color_f.r, color_f.g, color_f.b, 0}
 	} else {
-		return {r, g, b, a}
+		return color_f
 	}
 }
 
