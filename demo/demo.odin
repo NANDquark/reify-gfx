@@ -38,14 +38,15 @@ main :: proc() {
 		panic("failed to create GLFW window")
 	}
 	defer glfw.DestroyWindow(window)
-	vk.load_proc_addresses(rawptr(glfw.GetInstanceProcAddress))
-	if !glfw.VulkanSupported() {
-		panic("GLFW does not detect vulkan support on this system")
-	}
+	re.vulkan_init()
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
 	window_width, window_height := glfw.GetWindowSize(window)
-	re.init(&renderer, window)
+
+	re.init(&renderer, {WIDTH, HEIGHT}, glfw.GetRequiredInstanceExtensions())
+	surface: vk.SurfaceKHR
+	glfw.CreateWindowSurface(renderer.gpu.instance, window, nil, &surface)
+	re.set_surface(&renderer, surface)
 
 	// ASSET LOADING
 	tree_img := load_tile_img()
@@ -135,6 +136,8 @@ main :: proc() {
 		re.present(&renderer)
 		free_all(context.temp_allocator)
 	}
+
+	re.vulkan_shutdown()
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
