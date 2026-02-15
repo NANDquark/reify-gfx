@@ -1,6 +1,7 @@
 package reify
 
 import "base:runtime"
+import "core:dynlib"
 import "core:encoding/json"
 import "core:fmt"
 import "core:image"
@@ -9,7 +10,6 @@ import "core:math/linalg"
 import "core:mem"
 import "core:slice"
 import "lib/vma"
-import "vendor:glfw"
 import vk "vendor:vulkan"
 
 SHADER_BYTES :: #load("assets/quad.spv")
@@ -121,7 +121,8 @@ Rect :: struct {
 
 init :: proc(
 	r: ^Renderer,
-	window: glfw.WindowHandle,
+	window_size: [2]int,
+	required_extensions: []cstring,
 	allocator := context.allocator,
 	temp_allocator := context.temp_allocator,
 ) {
@@ -130,11 +131,9 @@ init :: proc(
 	context.temp_allocator = temp_allocator
 	defer free_all(context.temp_allocator)
 
-	gpu_init(&r.gpu, r.allocator)
+	gpu_init(&r.gpu, required_extensions, r.allocator)
 
-	// SETUP SURFACE
-	vk_assert(glfw.CreateWindowSurface(r.gpu.instance, window, nil, &r.surface))
-	r.window.width, r.window.height = glfw.GetWindowSize(window)
+	r.window.width, r.window.height = i32(window_size[0]), i32(window_size[1])
 	r.window.projection = vk_ortho_projection(
 		0,
 		f32(r.window.width),
@@ -142,17 +141,6 @@ init :: proc(
 		f32(r.window.height),
 		-1,
 		1,
-	)
-	surface_caps: vk.SurfaceCapabilitiesKHR
-	vk_assert(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &surface_caps))
-	swapchain_context_init(
-		&r.swapchain,
-		&r.gpu,
-		r.surface,
-		surface_caps,
-		r.window.width,
-		r.window.height,
-		allocator = r.allocator,
 	)
 
 	// Setup Index Buffer
@@ -261,7 +249,6 @@ init :: proc(
 			&u_buffer_bda_info,
 		)
 	}
-	resize(&r.swapchain.render_semaphores, len(r.swapchain.images))
 	semaphore_create_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
@@ -281,9 +268,6 @@ init :: proc(
 				&r.frame_contexts[i].present_semaphore,
 			),
 		)
-	}
-	for &s in r.swapchain.render_semaphores {
-		vk_assert(vk.CreateSemaphore(r.gpu.device, &semaphore_create_info, nil, &s))
 	}
 
 	// COMMAND BUFFERS
@@ -449,6 +433,21 @@ init :: proc(
 	)
 }
 
+set_surface :: proc(r: ^Renderer, surface: vk.SurfaceKHR) {
+	r.surface = surface
+	surface_caps: vk.SurfaceCapabilitiesKHR
+	vk_assert(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &surface_caps))
+	swapchain_context_init(
+		&r.swapchain,
+		&r.gpu,
+		r.surface,
+		surface_caps,
+		r.window.width,
+		r.window.height,
+		allocator = r.allocator,
+	)
+}
+
 destroy :: proc(r: ^Renderer) {
 	context.allocator = r.allocator
 	vk_assert(vk.DeviceWaitIdle(r.gpu.device))
@@ -571,6 +570,16 @@ swapchain_context_init :: proc(
 		}
 		vk_assert(vk.CreateImageView(sc.gpu.device, &view_create_info, nil, &sc.views[i]))
 	}
+	for s in sc.render_semaphores {
+		vk.DestroySemaphore(sc.gpu.device, s, nil)
+	}
+	resize(&sc.render_semaphores, int(swapchain_image_count))
+	semaphore_create_info := vk.SemaphoreCreateInfo {
+		sType = .SEMAPHORE_CREATE_INFO,
+	}
+	for &s in sc.render_semaphores {
+		vk_assert(vk.CreateSemaphore(sc.gpu.device, &semaphore_create_info, nil, &s))
+	}
 
 	if recreate {
 		// must be destroyed after the new swapchain is created w/ the oldSwapchain passed in so the drivers can be clever and reuse internal resources to reduce the cost of a new swapchain
@@ -601,7 +610,11 @@ swapchain_context_destroy :: proc(
 }
 
 @(private)
-gpu_init :: proc(dctx: ^GPU_Context, allocator := context.allocator) {
+gpu_init :: proc(
+	dctx: ^GPU_Context,
+	required_extensions: []cstring,
+	allocator := context.allocator,
+) {
 	context.allocator = allocator
 
 	app_info := &vk.ApplicationInfo {
@@ -610,8 +623,8 @@ gpu_init :: proc(dctx: ^GPU_Context, allocator := context.allocator) {
 		apiVersion = vk.API_VERSION_1_3,
 	}
 	instance_extensions := make([dynamic]cstring, context.temp_allocator)
+	append(&instance_extensions, ..required_extensions)
 	append(&instance_extensions, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)
-	append(&instance_extensions, ..glfw.GetRequiredInstanceExtensions())
 	count: u32
 	vk.EnumerateInstanceLayerProperties(&count, nil)
 	layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
@@ -1855,4 +1868,31 @@ font_face_destroy :: proc(face: ^Font_Face, allocator := context.allocator) {
 	context.allocator = allocator
 	delete(face.glyph_lookup)
 	delete(face.glyphs)
+}
+
+@(private)
+vulkan_lib: dynlib.Library
+
+vulkan_init :: proc() -> bool {
+	libs := []string{"libvulkan.so.1", "libvulkan.so"}
+	for name in libs {
+		lib, ok := dynlib.load_library(name)
+		if !ok do continue
+
+		sym, found := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
+		if !found {
+			dynlib.unload_library(lib)
+			continue
+		}
+
+		vulkan_lib = lib
+		get_instance_proc_address: vk.ProcGetInstanceProcAddr = auto_cast sym
+		vk.load_proc_addresses((rawptr)(get_instance_proc_address))
+		return true
+	}
+	return false
+}
+
+vulkan_shutdown :: proc() {
+	dynlib.unload_library(vulkan_lib)
 }
