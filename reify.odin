@@ -33,8 +33,7 @@ Renderer :: struct {
 	},
 	swapchain:       Swapchain_Context,
 	resources:       struct {
-		textures:             [dynamic]Texture,
-		sprites:              [dynamic]Sprite,
+		textures:             [dynamic]Texture, // TODO: convert to handle_map to support removals
 		font_faces:           [dynamic]Font_Face,
 		quad_fonts:           [dynamic]Quad_Font,
 		desc_pool:            vk.DescriptorPool,
@@ -449,6 +448,8 @@ set_surface :: proc(r: ^Renderer, surface: vk.SurfaceKHR) {
 }
 
 destroy :: proc(r: ^Renderer) {
+	if r == nil do return
+
 	context.allocator = r.allocator
 	vk_assert(vk.DeviceWaitIdle(r.gpu.device))
 
@@ -474,7 +475,6 @@ destroy :: proc(r: ^Renderer) {
 		// t.sampler is shared in tex_sampler
 	}
 	delete(r.resources.textures)
-	delete(r.resources.sprites)
 	for &face in r.resources.font_faces {
 		font_face_destroy(&face, r.allocator)
 	}
@@ -1026,9 +1026,9 @@ window_resize :: proc(r: ^Renderer, width, height: i32) {
 	r.swapchain.needs_update = true
 }
 
-draw_sprite :: proc(
+draw_image :: proc(
 	r: ^Renderer,
-	sh: Sprite_Handle,
+	tex: Texture_Handle,
 	position: [2]f32,
 	rotation: f32 = 0,
 	scale := [2]f32{1, 1},
@@ -1037,13 +1037,13 @@ draw_sprite :: proc(
 	uv_rect := Rect{x = 0, y = 0, w = 1, h = 1},
 	is_additive := false,
 ) {
-	sprite := r.resources.sprites[sh.idx]
+	texture := r.resources.textures[tex.idx]
 	uv_scale := [2]f32{uv_rect.w, uv_rect.h}
 	if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
 	if uv_scale.y < 0 do uv_scale.y = -uv_scale.y
 	pixel_scale := [2]f32 {
-		scale.x * sprite.width * uv_scale.x,
-		scale.y * sprite.height * uv_scale.y,
+		scale.x * f32(texture.width) * uv_scale.x,
+		scale.y * f32(texture.height) * uv_scale.y,
 	}
 	color := Color{rgb_tint.r, rgb_tint.b, rgb_tint.g, u8(alpha * 255 + 0.5)}
 	_append_instance(
@@ -1052,7 +1052,7 @@ draw_sprite :: proc(
 			pos = position,
 			scale = pixel_scale,
 			rotation = rotation,
-			texture_index = u32(sprite.texture.idx),
+			texture_index = u32(tex.idx),
 			color = convert_color_pma(color, is_additive),
 			type = u32(Quad_Instance_Type.Sprite),
 			uv_rect = {uv_rect.x, uv_rect.y, uv_rect.w, uv_rect.h},
@@ -1372,13 +1372,19 @@ convert_color_pma :: proc(color: Color, is_additive := false) -> [4]f32 {
 
 @(private)
 Texture :: struct {
-	alloc: vma.Allocation,
-	image: vk.Image,
-	view:  vk.ImageView,
+	alloc:  vma.Allocation,
+	image:  vk.Image,
+	view:   vk.ImageView,
+	width:  int,
+	height: int,
 }
 
 Texture_Handle :: struct {
 	idx: int,
+}
+
+Texture_Metrics :: struct {
+	width, height: int,
 }
 
 // Create a Texture and upload it to the GPU and get back a handle which can be
@@ -1402,7 +1408,7 @@ texture_load :: proc(
 		sampler = r.resources.tex_sampler
 	}
 
-	tex_vk_img := vk_create_texture(
+	tex := vk_create_texture(
 		r.gpu.device,
 		r.gpu.allocator,
 		vk.Format.R8G8B8A8_UNORM,
@@ -1411,7 +1417,7 @@ texture_load :: proc(
 		1,
 	)
 	idx := len(r.resources.textures)
-	append(&r.resources.textures, tex_vk_img)
+	append(&r.resources.textures, tex)
 
 	// copy image to the staging buffer
 	tex_staging_buffer_ptr: rawptr
@@ -1460,7 +1466,7 @@ texture_load :: proc(
 				dstAccessMask = {.TRANSFER_WRITE},
 				oldLayout = .UNDEFINED,
 				newLayout = .TRANSFER_DST_OPTIMAL,
-				image = tex_vk_img.image,
+				image = tex.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
 					levelCount = 1,
@@ -1483,7 +1489,7 @@ texture_load :: proc(
 		vk.CmdCopyBufferToImage(
 			one_time_cb.cmd,
 			r.resources.tex_staging_buffer,
-			tex_vk_img.image,
+			tex.image,
 			.TRANSFER_DST_OPTIMAL,
 			1,
 			&img_buffer_img_copy,
@@ -1502,7 +1508,7 @@ texture_load :: proc(
 				dstAccessMask = {.SHADER_READ},
 				oldLayout = .TRANSFER_DST_OPTIMAL,
 				newLayout = .SHADER_READ_ONLY_OPTIMAL,
-				image = tex_vk_img.image,
+				image = tex.image,
 				subresourceRange = vk.ImageSubresourceRange {
 					aspectMask = {.COLOR},
 					levelCount = 1,
@@ -1526,7 +1532,7 @@ texture_load :: proc(
 		descriptorType  = .COMBINED_IMAGE_SAMPLER,
 		pImageInfo      = &{
 			sampler = sampler,
-			imageView = tex_vk_img.view,
+			imageView = tex.view,
 			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		},
 	}
@@ -1536,27 +1542,12 @@ texture_load :: proc(
 	return Texture_Handle{idx = idx}
 }
 
-Sprite :: struct {
-	texture: Texture_Handle,
-	width:   f32,
-	height:  f32,
-}
-
-Sprite_Handle :: struct {
-	idx: int,
-}
-
-sprite_create :: proc(r: ^Renderer, t: Texture_Handle, width, height: f32) -> Sprite_Handle {
-	context.allocator = r.allocator
-
-	s := Sprite {
-		texture = t,
-		width   = width,
-		height  = height,
+texture_get_metrics :: proc(r: ^Renderer, handle: Texture_Handle) -> (Texture_Metrics, bool) {
+	if handle.idx < 0 || handle.idx >= len(r.resources.textures) {
+		return {}, false
 	}
-	idx := len(r.resources.sprites)
-	append(&r.resources.sprites, s)
-	return Sprite_Handle{idx = idx}
+	texture := r.resources.textures[handle.idx]
+	return Texture_Metrics{width = texture.width, height = texture.height}, true
 }
 
 Font_Atlas :: struct {

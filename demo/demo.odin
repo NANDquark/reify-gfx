@@ -53,7 +53,6 @@ main :: proc() {
 	defer image.destroy(tree_img)
 	tree_pixels := slice.reinterpret([]re.Color, tree_img.pixels.buf[:])
 	tree_tex := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
-	tree_sprite := re.sprite_create(&renderer, tree_tex, 16, 16)
 
 	tilemap_img := load_tilemap()
 	defer image.destroy(tilemap_img)
@@ -64,7 +63,6 @@ main :: proc() {
 		tilemap_img.width,
 		tilemap_img.height,
 	)
-	tilemap_sprite := re.sprite_create(&renderer, tilemap_tex, 203, 183)
 	mushroom_uv_rect := re.Rect {
 		x = f32(85) / f32(tilemap_img.width),
 		y = f32(34) / f32(tilemap_img.height),
@@ -95,12 +93,12 @@ main :: proc() {
 		fctx := re.start(&renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
-		re.draw_sprite(&renderer, tree_sprite, {0, 0})
+		re.draw_image(&renderer, tree_tex, {0, 0})
 		pulse := f32(math.sin(glfw.GetTime() * 2.0) + 1.0) * 0.5
 		// little fake glow effect
-		re.draw_sprite(
+		re.draw_image(
 			&renderer,
-			tree_sprite,
+			tree_tex,
 			{0, -2},
 			scale = {1 + pulse * 0.25, 1 + pulse * 0.25},
 			alpha = pulse,
@@ -111,7 +109,7 @@ main :: proc() {
 		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
 		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
 		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
-		re.draw_sprite(&renderer, tilemap_sprite, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
+		re.draw_image(&renderer, tilemap_tex, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
 
 		// batch 2 - draw on the screen, not the world!
 		re.begin_screen_mode(&renderer)

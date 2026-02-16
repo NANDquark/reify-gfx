@@ -407,7 +407,10 @@ vk_create_texture :: proc(
 	format: vk.Format,
 	width, height, mipLevels: u32,
 ) -> Texture {
-	tex: Texture
+	tex := Texture {
+		width  = int(width),
+		height = int(height),
+	}
 	tex_img_create_info := vk.ImageCreateInfo {
 		sType = .IMAGE_CREATE_INFO,
 		imageType = .D2,
