@@ -1,6 +1,7 @@
 debug*
 reify
 demo.bin
+demo.exe
 *.cap
 .envrc
 *.exe

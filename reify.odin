@@ -1866,7 +1866,15 @@ font_face_destroy :: proc(face: ^Font_Face, allocator := context.allocator) {
 vulkan_lib: dynlib.Library
 
 vulkan_init :: proc() -> bool {
-	libs := []string{"libvulkan.so.1", "libvulkan.so"}
+	libs: []string
+	when ODIN_OS == .Windows {
+		libs = []string{"vulkan-1.dll"}
+	} else when ODIN_OS == .Linux {
+		libs = []string{"libvulkan.so.1", "libvulkan.so"}
+	} else {
+		return false
+	}
+
 	for name in libs {
 		lib, ok := dynlib.load_library(name)
 		if !ok do continue
@@ -1888,3 +1896,4 @@ vulkan_init :: proc() -> bool {
 vulkan_shutdown :: proc() {
 	dynlib.unload_library(vulkan_lib)
 }
+

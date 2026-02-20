@@ -1,12 +1,17 @@
 # Reify - 2D Graphics Rendering on GPU
 
-## Init font_msdf_gen
+## Prerequisites
 
-### Nested Dependencies
+External dependencies (keep these generic to your platform/package manager):
 
-- cmake, C++ compiler, FreeType dev, libpng dev
+- Odin compiler
+- Vulkan runtime/loader (and Vulkan SDK if you need validation layers and C headers)
+- CMake
+- A C++ toolchain (MSVC on Windows, GCC/Clang on Linux)
+- `slangc` for shader compilation
+- `watchexec` (optional, for shader watch mode)
 
-### Commands
+## Initialize Submodules
 
 ```
 git submodule update --init --recursive
@@ -104,4 +109,5 @@ powershell -ExecutionPolicy Bypass -File .\assets\watch.ps1
 - Missing Vulkan loader/runtime: install Vulkan runtime and ensure loader is available (`vulkan-1.dll` on Windows, `libvulkan.so.1` on Linux).
 - Missing validation layer: install Vulkan SDK/layers and re-run validation scripts.
 - Missing `premake5`/`cmake`/MSVC in `PATH`: open the correct developer shell or update environment configuration before building.
->>>>>>> f7e91f7 (fix shader tools)
+- Missing validation layer: install Vulkan SDK/layers and re-run validation scripts.
+- Missing `premake5`/`cmake`/MSVC in `PATH`: open the correct developer shell or update environment configuration before building.
