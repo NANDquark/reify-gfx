@@ -3,3 +3,4 @@ reify
 demo.bin
 *.cap
 .envrc
+*.exe
