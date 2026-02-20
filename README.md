@@ -2,13 +2,13 @@
 
 ## Prerequisites
 
-External dependencies (keep these generic to your platform/package manager):
-
+External dependencies:
 - Odin compiler
-- Vulkan runtime/loader (and Vulkan SDK if you need validation layers and C headers)
+- Vulkan SDK (includes slangc)
 - CMake
+- Premake5
 - A C++ toolchain (MSVC on Windows, GCC/Clang on Linux)
-- `slangc` for shader compilation
+- `vcpkg` (Windows only, set VCPKG_ROOT or put it on PAHT)
 - `watchexec` (optional, for shader watch mode)
 
 ## Initialize Submodules
@@ -19,68 +19,29 @@ git submodule update --init --recursive
 
 ## Build Internal `./lib` Dependencies
 
-### `lib/msdfgen` (Windows + Linux)
+Windows (PowerShell):
 
-```
-cmake -S lib/msdfgen -B lib/msdfgen/build -DMSDFGEN_CORE_ONLY=OFF -DMSDFGEN_USE_VCPKG=OFF -DMSDFGEN_DISABLE_SVG=ON -DMSDFGEN_USE_SKIA=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build lib/msdfgen/build --config Release
+```powershell
+./build.ps1
 ```
 
-This should produce:
+Linux (shell):
+
+```bash
+./build.sh
+```
+
+These scripts build both internal dependencies (`lib/msdfgen` and `lib/vma`).
+Expected outputs include:
 
 - `lib/msdfgen/build/Release/msdfgen-c.lib` (Windows) or `lib/msdfgen/build/libmsdfgen-c.a` (Linux)
 - `lib/msdfgen/build/Release/msdfgen-ext-c.lib` (Windows) or `lib/msdfgen/build/libmsdfgen-ext-c.a` (Linux)
-
-### `lib/vma` (Windows x86_64)
-
-Run from a VS x64 developer shell (or ensure `premake5`, `cl.exe`, and `lib.exe` are in `PATH`):
-
-```
-cd lib/vma
-premake5 --vk-version=3 vs2022
-cd build
-build.bat
-cd ../..
-```
-
-This should produce:
-
-- `lib/vma/vma_windows_x86_64.lib`
-
-### `lib/vma` (Linux)
-
-Keep the existing shell workflow from `lib/vma/README.md` (Premake + make).
-The Odin import expects a generated `lib/vma/libvma_linux_x86_64.a` on Linux x86_64.
+- `lib/vma/vma_windows_x86_64.lib` (Windows)
+- `lib/vma/libvma_linux_x86_64.a` (Linux x86_64)
 
 ## Build And Run Demo
 
-Linux:
-
-```
-odin build demo
-./demo.bin
-```
-
-Windows:
-
-```
-odin build demo
-demo.exe
-```
-
-## Validation-Layer Run
-
-Linux shell:
-
-```
-./run_with_validation.sh
-```
-
-Windows PowerShell:
-
-```
-run_with_validation.ps1
-```
+`odin run demo`
 
 ## Shader Tooling
 
@@ -108,6 +69,4 @@ powershell -ExecutionPolicy Bypass -File .\assets\watch.ps1
 - `watchexec` not found when running watch scripts: install `watchexec` with your platform package manager, then rerun `assets/watch.sh` or `assets/watch.ps1`.
 - Missing Vulkan loader/runtime: install Vulkan runtime and ensure loader is available (`vulkan-1.dll` on Windows, `libvulkan.so.1` on Linux).
 - Missing validation layer: install Vulkan SDK/layers and re-run validation scripts.
-- Missing `premake5`/`cmake`/MSVC in `PATH`: open the correct developer shell or update environment configuration before building.
-- Missing validation layer: install Vulkan SDK/layers and re-run validation scripts.
-- Missing `premake5`/`cmake`/MSVC in `PATH`: open the correct developer shell or update environment configuration before building.
+- Missing build tools required by `build.ps1`/`build.sh`: open the correct developer shell or install/configure the required toolchain and rerun the script.
