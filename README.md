@@ -84,6 +84,9 @@ run_with_validation.ps1
 
 ## Shader Tooling
 
+Install `watchexec` if you want live shader rebuilds with the `watch` scripts.
+`shader_compile` scripts only require `slangc`.
+
 Linux shell:
 
 ```
@@ -102,6 +105,7 @@ powershell -ExecutionPolicy Bypass -File .\assets\watch.ps1
 ## Troubleshooting
 
 - Missing `.lib`/`.a` artifacts: rebuild `lib/msdfgen` and `lib/vma` and confirm output paths above.
+- `watchexec` not found when running watch scripts: install `watchexec` with your platform package manager, then rerun `assets/watch.sh` or `assets/watch.ps1`.
 - Missing Vulkan loader/runtime: install Vulkan runtime and ensure loader is available (`vulkan-1.dll` on Windows, `libvulkan.so.1` on Linux).
 - Missing validation layer: install Vulkan SDK/layers and re-run validation scripts.
 - Missing `premake5`/`cmake`/MSVC in `PATH`: open the correct developer shell or update environment configuration before building.
