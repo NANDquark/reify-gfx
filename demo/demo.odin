@@ -26,7 +26,9 @@ main :: proc() {
 	context.logger = log.create_console_logger()
 
 	// SETUP WINDOW
-	glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11) // RenderDoc can only handle X11
+	when ODIN_OS == .Linux {
+		glfw.InitHint(glfw.PLATFORM, glfw.PLATFORM_X11) // RenderDoc can only handle X11
+	}
 	if !bool(glfw.Init()) {
 		panic("failed to initialize GLFW")
 	}
@@ -38,7 +40,10 @@ main :: proc() {
 		panic("failed to create GLFW window")
 	}
 	defer glfw.DestroyWindow(window)
-	re.vulkan_init()
+	if !re.vulkan_init() {
+		panic("failed to initialize Vulkan loader (missing Vulkan runtime/loader?)")
+	}
+	defer re.vulkan_shutdown()
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
 	window_width, window_height := glfw.GetWindowSize(window)
@@ -134,8 +139,6 @@ main :: proc() {
 		re.present(&renderer)
 		free_all(context.temp_allocator)
 	}
-
-	re.vulkan_shutdown()
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
