@@ -1,6 +1,5 @@
 package reify
 
-import "base:runtime"
 import "core:dynlib"
 import "core:encoding/json"
 import "core:fmt"
@@ -21,6 +20,7 @@ TEX_STAGING_BUFFER_SIZE :: 128 * mem.Megabyte
 TEXTURE_MAX_COUNT :: 1024
 DESC_BINDING_TEXTURES :: 0
 DESC_BINDING_FONTS :: 1
+ENABLE_VK_VALIDATION :: bool(#config(Reify_Enable_Validation, false))
 
 Renderer :: struct {
 	allocator:       mem.Allocator,
@@ -530,14 +530,34 @@ swapchain_context_init :: proc(
 		}
 	}
 
+	swapchain_extent: vk.Extent2D
+	// Some platforms expose a fixed extent via currentExtent and require it verbatim.
+	if surface_caps.currentExtent.width != max(u32) {
+		swapchain_extent = surface_caps.currentExtent
+	} else {
+		req_width := window_width
+		req_height := window_height
+		if req_width < 0 do req_width = 0
+		if req_height < 0 do req_height = 0
+
+		clamped_width := u32(req_width)
+		if clamped_width < surface_caps.minImageExtent.width do clamped_width = surface_caps.minImageExtent.width
+		if clamped_width > surface_caps.maxImageExtent.width do clamped_width = surface_caps.maxImageExtent.width
+
+		clamped_height := u32(req_height)
+		if clamped_height < surface_caps.minImageExtent.height do clamped_height = surface_caps.minImageExtent.height
+		if clamped_height > surface_caps.maxImageExtent.height do clamped_height = surface_caps.maxImageExtent.height
+
+		swapchain_extent = vk.Extent2D{width = clamped_width, height = clamped_height}
+	}
+
 	sc.create_info = vk.SwapchainCreateInfoKHR {
 		sType = .SWAPCHAIN_CREATE_INFO_KHR,
 		surface = surface,
 		minImageCount = surface_caps.minImageCount,
 		imageFormat = IMAGE_FORMAT,
 		imageColorSpace = .COLORSPACE_SRGB_NONLINEAR,
-		// surface extent had max int width/height since it was uninitialized
-		imageExtent = vk.Extent2D{width = u32(window_width), height = u32(window_height)},
+		imageExtent = swapchain_extent,
 		imageArrayLayers = 1,
 		imageUsage = {.COLOR_ATTACHMENT},
 		preTransform = {.IDENTITY},
@@ -629,20 +649,22 @@ gpu_init :: proc(
 	vk.EnumerateInstanceLayerProperties(&count, nil)
 	layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
 	vk.EnumerateInstanceLayerProperties(&count, raw_data(layers_properties))
-	desired_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
 	enabled_layers := make([dynamic]cstring, context.temp_allocator)
-	for desired in desired_layers {
-		found := false
-		for &prop in layers_properties {
-			if desired == cstring(&prop.layerName[0]) {
-				found = true
-				break
+	if ENABLE_VK_VALIDATION {
+		desired_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
+		for desired in desired_layers {
+			found := false
+			for &prop in layers_properties {
+				if desired == cstring(&prop.layerName[0]) {
+					found = true
+					break
+				}
 			}
-		}
-		if found {
-			append(&enabled_layers, desired)
-		} else {
-			fmt.printf("Warning: Layer %s not found. Skipping...\n", desired)
+			if found {
+				append(&enabled_layers, desired)
+			} else {
+				fmt.printf("Warning: Layer %s not found. Skipping...\n", desired)
+			}
 		}
 	}
 	instance_create_info := &vk.InstanceCreateInfo {
@@ -791,7 +813,10 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 		Draw_Batch {
 			scissor = vk.Rect2D {
 				offset = {0, 0},
-				extent = {width = u32(r.window.width), height = u32(r.window.height)},
+				extent = {
+					width  = r.swapchain.create_info.imageExtent.width,
+					height = r.swapchain.create_info.imageExtent.height,
+				},
 			},
 		},
 	)
@@ -857,6 +882,32 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 	); res == .Swapchain_Must_Update {
 		r.swapchain.needs_update = true
 	}
+	if r.swapchain.needs_update {
+		vk.DeviceWaitIdle(r.gpu.device)
+		surface_caps: vk.SurfaceCapabilitiesKHR
+		surface_caps_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+			r.gpu.physical,
+			r.surface,
+			&surface_caps,
+		)
+		if surface_caps_result == .ERROR_SURFACE_LOST_KHR {
+			r.swapchain.needs_update = true
+			return
+		}
+		vk_assert(surface_caps_result)
+		swapchain_context_init(
+			&r.swapchain,
+			&r.gpu,
+			r.surface,
+			surface_caps,
+			r.window.width,
+			r.window.height,
+			recreate = true,
+			allocator = r.allocator,
+		)
+		r.swapchain.needs_update = false
+		return
+	}
 
 	// Store updated shader data
 	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Quad_Shader_Data))
@@ -905,7 +956,12 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 	// dynamic rendering
 	rendering_info := vk.RenderingInfo {
 		sType = .RENDERING_INFO,
-		renderArea = {extent = {width = u32(r.window.width), height = u32(r.window.height)}},
+		renderArea = {
+			extent = {
+				width  = r.swapchain.create_info.imageExtent.width,
+				height = r.swapchain.create_info.imageExtent.height,
+			},
+		},
 		layerCount = 1,
 		colorAttachmentCount = 1,
 		pColorAttachments = &color_attachment_info,
@@ -915,8 +971,8 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 	vp := vk.Viewport {
 		x      = 0,
 		y      = 0,
-		width  = f32(r.window.width),
-		height = f32(r.window.height),
+		width  = f32(r.swapchain.create_info.imageExtent.width),
+		height = f32(r.swapchain.create_info.imageExtent.height),
 	}
 	vk.CmdSetViewport(cb, 0, 1, &vp)
 	vk.CmdBindPipeline(cb, .GRAPHICS, r.pipeline)
@@ -1001,9 +1057,16 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 	if r.swapchain.needs_update {
 		vk.DeviceWaitIdle(r.gpu.device)
 		surface_caps: vk.SurfaceCapabilitiesKHR
-		vk_assert(
-			vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &surface_caps),
+		surface_caps_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+			r.gpu.physical,
+			r.surface,
+			&surface_caps,
 		)
+		if surface_caps_result == .ERROR_SURFACE_LOST_KHR {
+			r.swapchain.needs_update = true
+			return
+		}
+		vk_assert(surface_caps_result)
 		swapchain_context_init(
 			&r.swapchain,
 			&r.gpu,
@@ -1014,6 +1077,7 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 			recreate = true,
 			allocator = r.allocator,
 		)
+		r.swapchain.needs_update = false
 	}
 }
 
@@ -1346,7 +1410,13 @@ set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 // Reset the scissor/clip back to the full window
 clear_scissor :: proc(r: ^Renderer) {
 	context.allocator = r.allocator
-	set_scissor(r, 0, 0, u32(r.window.width), u32(r.window.height))
+	set_scissor(
+		r,
+		0,
+		0,
+		r.swapchain.create_info.imageExtent.width,
+		r.swapchain.create_info.imageExtent.height,
+	)
 }
 
 convert_color_f32 :: proc(color: Color) -> [4]f32 {

@@ -83,19 +83,17 @@ main :: proc() {
 	// MAIN LOOP
 	cam_pos := [2]f32{100, 100}
 	cam_zoom: f32 = 1
-	last_mouse_pos: [2]f64
 	frame_delta_time: time.Duration
 	last_frame_time := time.now()
 	for !glfw.WindowShouldClose(window) {
 		frame_start_time := time.now()
 		frame_delta_time = time.diff(last_frame_time, frame_start_time)
-		dt := f32(time.duration_seconds(frame_delta_time))
 		last_frame_time = frame_start_time
 
 		glfw.PollEvents()
 
 		// Draw!
-		fctx := re.start(&renderer, cam_pos, cam_zoom)
+		re.start(&renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
 		re.draw_image(&renderer, tree_tex, {0, 0})
@@ -125,7 +123,6 @@ main :: proc() {
 			re.Color{0, 0, 0, 255},
 		)
 		p0 := [2]f32{f32(window_width) / 2 - 300, f32(window_height) / 2 + 200}
-		p1 := [2]f32{p0.x + 500, p0.y}
 		re.draw_text(
 			&renderer,
 			font,

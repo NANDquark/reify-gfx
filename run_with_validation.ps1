@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
 Push-Location $repoRoot
 try {
-	& odin build demo
+	& odin build demo -define:Reify_Enable_Validation=true
 	if ($LASTEXITCODE -ne 0) {
 		throw "odin build demo failed."
 	}
