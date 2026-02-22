@@ -8,6 +8,7 @@ import "core:math"
 import "core:math/linalg"
 import "core:mem"
 import "core:slice"
+import "core:time"
 import "lib/vma"
 import vk "vendor:vulkan"
 
@@ -70,6 +71,7 @@ GPU_Context :: struct {
 
 Swapchain_Context :: struct {
 	gpu:               ^GPU_Context,
+	vsync_enabled:     bool,
 	create_info:       vk.SwapchainCreateInfoKHR,
 	handle:            vk.SwapchainKHR,
 	images:            [dynamic]vk.Image,
@@ -118,6 +120,16 @@ Rect :: struct {
 	x, y, w, h: f32,
 }
 
+FPS_Tracker :: struct {
+	initialized: bool,
+	last_time:   time.Time,
+	frame_count: int,
+	elapsed:     time.Duration,
+	display:     int,
+}
+
+fps_tracker: FPS_Tracker
+
 init :: proc(
 	r: ^Renderer,
 	window_size: [2]int,
@@ -131,6 +143,7 @@ init :: proc(
 	defer free_all(context.temp_allocator)
 
 	gpu_init(&r.gpu, required_extensions, r.allocator)
+	r.swapchain.vsync_enabled = true
 
 	r.window.width, r.window.height = i32(window_size[0]), i32(window_size[1])
 	r.window.projection = vk_ortho_projection(
@@ -447,6 +460,14 @@ set_surface :: proc(r: ^Renderer, surface: vk.SurfaceKHR) {
 	)
 }
 
+set_vsync :: proc(r: ^Renderer, enabled: bool) {
+	if r.swapchain.vsync_enabled == enabled do return
+	r.swapchain.vsync_enabled = enabled
+	if r.surface != {} {
+		r.swapchain.needs_update = true
+	}
+}
+
 destroy :: proc(r: ^Renderer) {
 	if r == nil do return
 
@@ -530,6 +551,45 @@ swapchain_context_init :: proc(
 		}
 	}
 
+	present_mode: vk.PresentModeKHR = .FIFO
+	if !sc.vsync_enabled {
+		present_mode_count: u32
+		vk_assert(
+			vk.GetPhysicalDeviceSurfacePresentModesKHR(
+				sc.gpu.physical,
+				surface,
+				&present_mode_count,
+				nil,
+			),
+		)
+		if present_mode_count > 0 {
+			present_modes := make([]vk.PresentModeKHR, present_mode_count, allocator)
+			defer delete(present_modes)
+			vk_assert(
+				vk.GetPhysicalDeviceSurfacePresentModesKHR(
+					sc.gpu.physical,
+					surface,
+					&present_mode_count,
+					raw_data(present_modes),
+				),
+			)
+			for mode in present_modes {
+				if mode == .IMMEDIATE {
+					present_mode = .IMMEDIATE
+					break
+				}
+			}
+			if present_mode == .FIFO {
+				for mode in present_modes {
+					if mode == .MAILBOX {
+						present_mode = .MAILBOX
+						break
+					}
+				}
+			}
+		}
+	}
+
 	swapchain_extent: vk.Extent2D
 	// Some platforms expose a fixed extent via currentExtent and require it verbatim.
 	if surface_caps.currentExtent.width != max(u32) {
@@ -548,22 +608,25 @@ swapchain_context_init :: proc(
 		if clamped_height < surface_caps.minImageExtent.height do clamped_height = surface_caps.minImageExtent.height
 		if clamped_height > surface_caps.maxImageExtent.height do clamped_height = surface_caps.maxImageExtent.height
 
-		swapchain_extent = vk.Extent2D{width = clamped_width, height = clamped_height}
+		swapchain_extent = vk.Extent2D {
+			width  = clamped_width,
+			height = clamped_height,
+		}
 	}
 
 	sc.create_info = vk.SwapchainCreateInfoKHR {
-		sType = .SWAPCHAIN_CREATE_INFO_KHR,
-		surface = surface,
-		minImageCount = surface_caps.minImageCount,
-		imageFormat = IMAGE_FORMAT,
-		imageColorSpace = .COLORSPACE_SRGB_NONLINEAR,
-		imageExtent = swapchain_extent,
+		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
+		surface          = surface,
+		minImageCount    = surface_caps.minImageCount,
+		imageFormat      = IMAGE_FORMAT,
+		imageColorSpace  = .COLORSPACE_SRGB_NONLINEAR,
+		imageExtent      = swapchain_extent,
 		imageArrayLayers = 1,
-		imageUsage = {.COLOR_ATTACHMENT},
-		preTransform = {.IDENTITY},
-		compositeAlpha = {.OPAQUE},
-		presentMode = .FIFO,
-		oldSwapchain = sc.handle if recreate else {},
+		imageUsage       = {.COLOR_ATTACHMENT},
+		preTransform     = {.IDENTITY},
+		compositeAlpha   = {.OPAQUE},
+		presentMode      = present_mode,
+		oldSwapchain     = sc.handle if recreate else {},
 	}
 	vk_assert(vk.CreateSwapchainKHR(sc.gpu.device, &sc.create_info, nil, &sc.handle))
 
@@ -814,7 +877,7 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 			scissor = vk.Rect2D {
 				offset = {0, 0},
 				extent = {
-					width  = r.swapchain.create_info.imageExtent.width,
+					width = r.swapchain.create_info.imageExtent.width,
 					height = r.swapchain.create_info.imageExtent.height,
 				},
 			},
@@ -958,7 +1021,7 @@ present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) {
 		sType = .RENDERING_INFO,
 		renderArea = {
 			extent = {
-				width  = r.swapchain.create_info.imageExtent.width,
+				width = r.swapchain.create_info.imageExtent.width,
 				height = r.swapchain.create_info.imageExtent.height,
 			},
 		},
@@ -1216,7 +1279,7 @@ draw_text :: proc(
 ) {
 	context.allocator = allocator
 
-	layout := layout_text(r, font, text, pos, font_size, spaces_per_tab, r.allocator)
+	layout := layout_text(r, font, text, font_size, pos, spaces_per_tab, r.allocator)
 	defer delete(layout.quads)
 
 	if font.idx > len(r.resources.font_faces) - 1 {
@@ -1240,21 +1303,89 @@ draw_text :: proc(
 	}
 }
 
-measure_text :: proc(
+draw_fps :: proc(
 	r: ^Renderer,
 	font: Font_Face_Handle,
+	position: [2]f32,
+	font_size: int,
+	color := Color{255, 255, 255, 255},
+	allocator := context.allocator,
+) {
+	context.allocator = allocator
+
+	// TODO: optimize by avoiding per-call screen mode toggles to prevent extra draw batches.
+	begin_screen_mode(r)
+	defer end_screen_mode(r)
+
+	_fps_tracker_update()
+	fps_text := fmt.tprintf("%d FPS", fps_tracker.display)
+	metrics := measure_text(r, font, fps_text, font_size, allocator = allocator)
+	draw_text(
+		r,
+		font,
+		fps_text,
+		{position.x, position.y + metrics.font_y_base},
+		font_size,
+		color,
+		allocator = allocator,
+	)
+}
+
+Font_Metrics :: struct {
+	text_rect:        Rect,
+	font_y_base:      f32,
+	font_line_height: f32,
+}
+
+measure_text :: proc(
+	r: ^Renderer,
+	font_handle: Font_Face_Handle,
 	text: string,
-	pos: [2]f32,
 	font_size: int,
 	spaces_per_tab := 4,
 	allocator := context.allocator,
-) -> Rect {
+) -> Font_Metrics {
 	context.allocator = allocator
 
-	layout := layout_text(r, font, text, pos, font_size, spaces_per_tab, r.allocator)
+	layout := layout_text(
+		r,
+		font_handle,
+		text,
+		font_size,
+		spaces_per_tab = spaces_per_tab,
+		allocator = r.allocator,
+	)
 	defer delete(layout.quads)
 
-	return layout.bounds
+	font := r.resources.font_faces[font_handle.idx]
+	glyph_scale := f32(font_size) / f32(font.size)
+
+	return Font_Metrics {
+		text_rect = layout.bounds,
+		font_y_base = font.y_base * glyph_scale,
+		font_line_height = font.line_height * glyph_scale,
+	}
+}
+
+@(private)
+_fps_tracker_update :: proc() {
+	curr_time := time.now()
+	if !fps_tracker.initialized {
+		fps_tracker.initialized = true
+		fps_tracker.last_time = curr_time
+		return
+	}
+
+	dt := time.diff(fps_tracker.last_time, curr_time)
+	fps_tracker.last_time = curr_time
+	fps_tracker.frame_count += 1
+	fps_tracker.elapsed += dt
+
+	if fps_tracker.elapsed >= time.Second {
+		fps_tracker.display = fps_tracker.frame_count
+		fps_tracker.frame_count = 0
+		fps_tracker.elapsed -= time.Second
+	}
 }
 
 Text_Layout_Quad :: struct {
@@ -1272,8 +1403,8 @@ layout_text :: proc(
 	r: ^Renderer,
 	font: Font_Face_Handle,
 	text: string,
-	pos: [2]f32,
 	font_size: int,
+	pos := [2]f32{0, 0},
 	spaces_per_tab := 4,
 	allocator := context.allocator,
 ) -> Text_Layout {
@@ -1966,4 +2097,3 @@ vulkan_init :: proc() -> bool {
 vulkan_shutdown :: proc() {
 	dynlib.unload_library(vulkan_lib)
 }
-
