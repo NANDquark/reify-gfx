@@ -120,15 +120,6 @@ Rect :: struct {
 	x, y, w, h: f32,
 }
 
-FPS_Tracker :: struct {
-	initialized: bool,
-	last_time:   time.Time,
-	frame_count: int,
-	elapsed:     time.Duration,
-	display:     int,
-}
-
-fps_tracker: FPS_Tracker
 
 init :: proc(
 	r: ^Renderer,
@@ -1366,6 +1357,17 @@ measure_text :: proc(
 		font_line_height = font.line_height * glyph_scale,
 	}
 }
+
+@(private)
+FPS_Tracker :: struct {
+	initialized: bool,
+	last_time:   time.Time,
+	frame_count: int,
+	elapsed:     time.Duration,
+	display:     int,
+}
+
+fps_tracker: FPS_Tracker
 
 @(private)
 _fps_tracker_update :: proc() {
