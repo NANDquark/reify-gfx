@@ -845,7 +845,7 @@ _append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
 	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
 }
 
-start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame_Context {
+start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) {
 	context.allocator = r.allocator
 
 	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
@@ -874,8 +874,6 @@ start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) -> ^Frame
 			},
 		},
 	)
-
-	return fctx
 }
 
 // Subsequent draw calls will use a screen-space projection matrix until `end_screen_mode` is called.
@@ -1221,6 +1219,22 @@ draw_line :: proc(
 	if rounded {
 		draw_circle(r, p0, height, color, is_additive)
 		draw_circle(r, p1, height, color, is_additive)
+	}
+}
+
+draw_lines :: proc(
+	r: ^Renderer,
+	thickness: int,
+	color: Color,
+	rounded := false,
+	is_additive := false,
+	points: ..[2]f32,
+) {
+	if len(points) < 2 do return
+	if thickness <= 0 do return
+
+	for i in 0 ..< len(points) - 1 {
+		draw_line(r, points[i], points[i + 1], thickness, color, rounded, is_additive)
 	}
 }
 
