@@ -1142,6 +1142,13 @@ window_resize :: proc(r: ^Renderer, width, height: i32) {
 	r.swapchain.needs_update = true
 }
 
+FULL_UV :: Rect {
+	x = 0,
+	y = 0,
+	w = 1,
+	h = 1,
+}
+
 draw_image :: proc(
 	r: ^Renderer,
 	tex: Texture_Handle,
@@ -1150,7 +1157,7 @@ draw_image :: proc(
 	scale := [2]f32{1, 1},
 	rgb_tint := [3]u8{255, 255, 255},
 	alpha: f32 = 1,
-	uv_rect := Rect{x = 0, y = 0, w = 1, h = 1},
+	uv_rect := FULL_UV,
 	is_additive := false,
 ) {
 	texture := r.resources.textures[tex.idx]
