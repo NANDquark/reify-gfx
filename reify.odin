@@ -4,6 +4,7 @@ import "core:dynlib"
 import "core:encoding/json"
 import "core:fmt"
 import "core:image"
+import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
@@ -838,10 +839,21 @@ gpu_destroy :: proc(gctx: ^GPU_Context) {
 }
 
 @(private)
-_append_instance :: proc(r: ^Renderer, instance: Quad_Instance) {
+_append_instance :: proc(r: ^Renderer, instance: Quad_Instance, pivot: Pivot = .Topleft) {
+	instance := instance
+	switch pivot {
+	case .Topleft:
+		instance.pos += {instance.scale.x / 2, instance.scale.y / 2}
+	case .Center:
+		break
+	}
+
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.shader_data.instances[fctx.total_instances] = instance
 	fctx.total_instances += 1
+	if len(fctx.draw_batches) <= 0 {
+		log.error("Renderer draw_* called before Renderer start")
+	}
 	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
 }
 
@@ -1183,11 +1195,17 @@ draw_image :: proc(
 	)
 }
 
+Pivot :: enum {
+	Center,
+	Topleft,
+}
+
 draw_rect :: proc(
 	r: ^Renderer,
 	position: [2]f32,
 	width, height: f32,
 	color: Color,
+	pivot: Pivot = .Topleft,
 	rotation: f32 = 0,
 	is_additive := false,
 ) {
@@ -1201,6 +1219,7 @@ draw_rect :: proc(
 			type = u32(Quad_Instance_Type.Rect),
 			uv_rect = {0, 0, 1, 1},
 		},
+		pivot,
 	)
 }
 
@@ -1221,7 +1240,7 @@ draw_line :: proc(
 	diff := p1 - p0
 	rot := linalg.atan2(diff.y, diff.x)
 
-	draw_rect(r, center_pos, width, height, color, rot, is_additive)
+	draw_rect(r, center_pos, width, height, color, rotation = rot, is_additive = is_additive)
 
 	if rounded {
 		draw_circle(r, p0, height, color, is_additive)
@@ -1287,7 +1306,7 @@ draw_text :: proc(
 	font_size: int,
 	color := Color{255, 255, 255, 255},
 	spaces_per_tab := 4,
-	allocator := context.allocator,
+	allocator := context.temp_allocator,
 ) {
 	context.allocator = allocator
 
@@ -1324,10 +1343,6 @@ draw_fps :: proc(
 	allocator := context.allocator,
 ) {
 	context.allocator = allocator
-
-	// TODO: optimize by avoiding per-call screen mode toggles to prevent extra draw batches.
-	begin_screen_mode(r)
-	defer end_screen_mode(r)
 
 	_fps_tracker_update()
 	fps_text := fmt.tprintf("%d FPS", fps_tracker.display)
