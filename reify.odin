@@ -1240,7 +1240,16 @@ draw_line :: proc(
 	diff := p1 - p0
 	rot := linalg.atan2(diff.y, diff.x)
 
-	draw_rect(r, center_pos, width, height, color, rotation = rot, is_additive = is_additive)
+	draw_rect(
+		r,
+		center_pos,
+		width,
+		height,
+		color,
+		pivot = .Center,
+		rotation = rot,
+		is_additive = is_additive,
+	)
 
 	if rounded {
 		draw_circle(r, p0, height, color, is_additive)
