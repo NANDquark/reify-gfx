@@ -188,13 +188,14 @@ init :: proc(
 	// Init global samplers
 	tex_sampler_create_info := vk.SamplerCreateInfo {
 		sType            = .SAMPLER_CREATE_INFO,
-		magFilter        = .LINEAR,
-		minFilter        = .LINEAR,
-		mipmapMode       = .LINEAR,
+		// Keep sprites pixel-crisp by default.
+		magFilter        = .NEAREST,
+		minFilter        = .NEAREST,
+		mipmapMode       = .NEAREST,
 		addressModeU     = .CLAMP_TO_EDGE,
 		addressModeV     = .CLAMP_TO_EDGE,
 		addressModeW     = .CLAMP_TO_EDGE,
-		anisotropyEnable = true,
+		anisotropyEnable = false,
 		maxAnisotropy    = 8, // widely used
 		maxLod           = vk.LOD_CLAMP_NONE,
 	}
@@ -1234,11 +1235,29 @@ draw_line :: proc(
 ) {
 	if thickness <= 0 do return
 
+	thick := f32(math.max(1, thickness))
+
 	center_pos := (p0 + p1) * 0.5
 	width := linalg.distance(p0, p1)
-	height := f32(thickness)
+	height := thick
 	diff := p1 - p0
+	if width <= 0 {
+		draw_rect(
+			r,
+			p0 - [2]f32{thick * 0.5, thick * 0.5},
+			thick,
+			thick,
+			color,
+			is_additive = is_additive,
+		)
+		return
+	}
 	rot := linalg.atan2(diff.y, diff.x)
+
+	if rounded {
+		draw_circle(r, p0, height, color, is_additive)
+		draw_circle(r, p1, height, color, is_additive)
+	}
 
 	draw_rect(
 		r,
@@ -1250,11 +1269,6 @@ draw_line :: proc(
 		rotation = rot,
 		is_additive = is_additive,
 	)
-
-	if rounded {
-		draw_circle(r, p0, height, color, is_additive)
-		draw_circle(r, p1, height, color, is_additive)
-	}
 }
 
 draw_lines :: proc(
@@ -1289,6 +1303,7 @@ draw_circle :: proc(
 			type = u32(Quad_Instance_Type.Circle),
 			uv_rect = {0, 0, 1, 1},
 		},
+		pivot = .Center,
 	)
 }
 
@@ -1339,6 +1354,7 @@ draw_text :: proc(
 				texture_index = u32(face.texture.idx),
 				data1 = u32(font.idx),
 			},
+			pivot = .Center,
 		)
 	}
 }
@@ -1355,12 +1371,11 @@ draw_fps :: proc(
 
 	_fps_tracker_update()
 	fps_text := fmt.tprintf("%d FPS", fps_tracker.display)
-	metrics := measure_text(r, font, fps_text, font_size, allocator = allocator)
 	draw_text(
 		r,
 		font,
 		fps_text,
-		{position.x, position.y + metrics.font_y_base},
+		position,
 		font_size,
 		color,
 		allocator = allocator,
@@ -1481,7 +1496,8 @@ layout_text :: proc(
 
 	start_x := pos.x
 	pen_x := pos.x
-	pen_y := pos.y // baseline (where the letters sit)
+	// draw_text/layout_text position is top-left; convert to baseline for glyph placement.
+	pen_y := pos.y + face.y_base * glyph_scale
 
 	min_x := start_x
 	max_x := start_x
@@ -1522,13 +1538,11 @@ layout_text :: proc(
 
 		x := pen_x + glyph.x_offset * glyph_scale
 		y := pen_y - face.y_base * glyph_scale + glyph.y_offset * glyph_scale
-		snapped_x := math.round(x)
-		snapped_y := math.round(y)
 
 		if glyph.width > 0 && glyph.height > 0 {
 			glyph_center := [2]f32 {
-				snapped_x + glyph.width * glyph_scale * 0.5,
-				snapped_y + glyph.height * glyph_scale * 0.5,
+				x + glyph.width * glyph_scale * 0.5,
+				y + glyph.height * glyph_scale * 0.5,
 			}
 			uv_scale := [2]f32{glyph.uv_rect.w, glyph.uv_rect.h}
 			if uv_scale.x < 0 do uv_scale.x = -uv_scale.x
@@ -1542,10 +1556,10 @@ layout_text :: proc(
 				Text_Layout_Quad{pos = glyph_center, scale = pixel_scale, uv_rect = glyph.uv_rect},
 			)
 
-			glyph_min_x := snapped_x
-			glyph_min_y := snapped_y
-			glyph_max_x := snapped_x + glyph.width * glyph_scale
-			glyph_max_y := snapped_y + glyph.height * glyph_scale
+			glyph_min_x := x
+			glyph_min_y := y
+			glyph_max_x := x + glyph.width * glyph_scale
+			glyph_max_y := y + glyph.height * glyph_scale
 			if glyph_min_x < min_x do min_x = glyph_min_x
 			if glyph_min_y < min_y do min_y = glyph_min_y
 			if glyph_max_x > max_x do max_x = glyph_max_x
@@ -1604,17 +1618,20 @@ convert_color_f32 :: proc(color: Color) -> [4]f32 {
 // Convert color to the pre-multiplied alpha form necessary for shaders
 @(private)
 convert_color_pma :: proc(color: Color, is_additive := false) -> [4]f32 {
-	color_f := convert_color_f32(color)
+	color_srgb := convert_color_f32(color)
+	alpha := color_srgb.a
+
+	// Instance colors are authored in sRGB bytes, but rendering occurs in
+	// linear space (sRGB swapchain attachment). Convert to linear first.
+	linear_rgb := linalg.vector3_srgb_to_linear([3]f32{color_srgb.r, color_srgb.g, color_srgb.b})
 
 	// pre-multiply alpha
-	color_f.r *= color_f.a
-	color_f.g *= color_f.a
-	color_f.b *= color_f.a
+	linear_rgb *= alpha
 
 	if is_additive {
-		return {color_f.r, color_f.g, color_f.b, 0}
+		return {linear_rgb.r, linear_rgb.g, linear_rgb.b, 0}
 	} else {
-		return color_f
+		return {linear_rgb.r, linear_rgb.g, linear_rgb.b, alpha}
 	}
 }
 
