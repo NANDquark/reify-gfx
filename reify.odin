@@ -1652,6 +1652,11 @@ Texture_Metrics :: struct {
 	width, height: int,
 }
 
+Texture_Color_Space :: enum {
+	SRGB,
+	Linear,
+}
+
 // Create a Texture and upload it to the GPU and get back a handle which can be
 // used later to render with that Texture.
 texture_load :: proc(
@@ -1659,6 +1664,7 @@ texture_load :: proc(
 	pixels: []Color,
 	width, height: int,
 	optional_sampler: Maybe(vk.Sampler) = nil,
+	color_space: Texture_Color_Space = .SRGB,
 ) -> Texture_Handle {
 	context.allocator = r.allocator
 
@@ -1673,10 +1679,18 @@ texture_load :: proc(
 		sampler = r.resources.tex_sampler
 	}
 
+	texture_format: vk.Format
+	switch color_space {
+	case .SRGB:
+		texture_format = .R8G8B8A8_SRGB
+	case .Linear:
+		texture_format = .R8G8B8A8_UNORM
+	}
+
 	tex := vk_create_texture(
 		r.gpu.device,
 		r.gpu.allocator,
-		vk.Format.R8G8B8A8_UNORM,
+		texture_format,
 		u32(width),
 		u32(height),
 		1,
@@ -1691,24 +1705,27 @@ texture_load :: proc(
 	)
 	data_size := len(pixels) * size_of(Color)
 	mem.copy(tex_staging_buffer_ptr, raw_data(pixels), data_size)
-	// apply pre-multiplied alpha with gamma correction
-	staged_pixels := ([^]Color)(tex_staging_buffer_ptr)[:len(pixels)]
-	for &p in staged_pixels {
-		a := f32(p.a) / 255.0
-		if a == 1 do continue
-		if a == 0 {
-			p.r, p.g, p.b = 0, 0, 0
-			continue
+	// Apply PMA + gamma-correct conversion for color textures.
+	// Keep linear data (e.g. MSDF atlases) untouched.
+	if color_space == .SRGB {
+		staged_pixels := ([^]Color)(tex_staging_buffer_ptr)[:len(pixels)]
+		for &p in staged_pixels {
+			a := f32(p.a) / 255.0
+			if a == 1 do continue
+			if a == 0 {
+				p.r, p.g, p.b = 0, 0, 0
+				continue
+			}
+
+			srgb_color := [3]f32{f32(p.r) / 255, f32(p.g) / 255, f32(p.b) / 255}
+			linear_color := linalg.vector3_srgb_to_linear(srgb_color)
+			linear_color *= a // pre-multiply alpha properly in linear space
+			srgb_color = linalg.vector3_linear_to_srgb(linear_color)
+
+			p.r = u8(srgb_color.r * 255 + 0.5)
+			p.g = u8(srgb_color.g * 255 + 0.5)
+			p.b = u8(srgb_color.b * 255 + 0.5)
 		}
-
-		srgb_color := [3]f32{f32(p.r) / 255, f32(p.g) / 255, f32(p.b) / 255}
-		linear_color := linalg.vector3_srgb_to_linear(srgb_color)
-		linear_color *= a // pre-multiply alpha properly in linear space
-		srgb_color = linalg.vector3_linear_to_srgb(linear_color)
-
-		p.r = u8(srgb_color.r * 255 + 0.5)
-		p.g = u8(srgb_color.g * 255 + 0.5)
-		p.b = u8(srgb_color.b * 255 + 0.5)
 	}
 	vma.flush_allocation(
 		r.gpu.allocator,
@@ -1958,6 +1975,7 @@ font_load :: proc(
 		atlas_img.width,
 		atlas_img.height,
 		r.resources.msdf_sampler,
+		color_space = .Linear,
 	)
 
 	face: Font_Face
