@@ -155,9 +155,12 @@ run :: proc() -> Error {
 
 	odin_code := strings.to_string(sb)
 	curr_dir := #directory
-	outfile_path := filepath.join([]string{curr_dir, "../../reify_shader_types.odin"})
-	write_success := os.write_entire_file(outfile_path, transmute([]byte)odin_code)
-	if !write_success do return Tool_Error.Write_Failed
+	outfile_path, _ := filepath.join(
+		[]string{curr_dir, "../../reify_shader_types.odin"},
+		context.allocator,
+	)
+	write_err := os.write_entire_file(outfile_path, transmute([]byte)odin_code)
+	if write_err != nil do return Tool_Error.Write_Failed
 
 	fmt.printfln("Successfully wrote reify_shader_types.odin")
 

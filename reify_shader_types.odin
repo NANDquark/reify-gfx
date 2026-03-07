@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-02-20 02:23:56.128789400 +0000 UTC
+// Generated: 2026-03-07 06:18:43.919868647 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
