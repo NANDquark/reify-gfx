@@ -41,7 +41,12 @@ Expected outputs include:
 
 ## Build And Run Demo
 
-`odin run demo`
+`odin run demo -out:/tmp/reify-demo`
+
+Reify uses Vulkan 1.3. See the [GLFW demo](demo/demo.odin) or
+[SDL example](examples/sdl_vulkan/main.odin) for `init(renderer, info)` setup.
+The host window must outlive the renderer. Platform callbacks are defined in
+[reify_platform.odin](reify_platform.odin).
 
 ## Shader Tooling
 

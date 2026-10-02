@@ -159,13 +159,14 @@ vk_shader_module_init :: proc(
 	device: vk.Device,
 	shader_module: ^vk.ShaderModule,
 	shader_bytes: []byte,
-) {
+) -> vk.Result {
 	shader_module_create_info := vk.ShaderModuleCreateInfo {
 		sType    = .SHADER_MODULE_CREATE_INFO,
 		codeSize = len(shader_bytes),
 		pCode    = cast(^u32)raw_data(shader_bytes),
 	}
-	vk_assert(vk.CreateShaderModule(device, &shader_module_create_info, nil, shader_module))
+	if res := vk.CreateShaderModule(device, &shader_module_create_info, nil, shader_module); res != .SUCCESS do return res
+	return .SUCCESS
 }
 
 vk_pipeline_init :: proc(
@@ -176,7 +177,7 @@ vk_pipeline_init :: proc(
 	shader_module: vk.ShaderModule,
 	out_pipeline_layout: ^vk.PipelineLayout,
 	out_pipeline: ^vk.Pipeline,
-) {
+) -> vk.Result {
 	push_constant_range := vk.PushConstantRange {
 		stageFlags = {.VERTEX, .FRAGMENT},
 		size       = size_of(Push_Constants_Type),
@@ -188,9 +189,7 @@ vk_pipeline_init :: proc(
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
-	vk_assert(
-		vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout),
-	)
+	if res := vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout); res != .SUCCESS do return res
 	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
 		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 	}
@@ -264,7 +263,8 @@ vk_pipeline_init :: proc(
 		pDynamicState       = &dynamic_state,
 		layout              = out_pipeline_layout^,
 	}
-	vk_assert(vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, out_pipeline))
+	if res := vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, out_pipeline); res != .SUCCESS do return res
+	return .SUCCESS
 }
 
 @(private = "file")

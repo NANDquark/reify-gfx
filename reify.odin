@@ -4,18 +4,13 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:time"
-import pf "../substrate"
 import "lib/vma"
 import vk "vendor:vulkan"
 
 RENDERER_BACKEND :: string(#config(Renderer_Backend, "vulkan13"))
 
-when RENDERER_BACKEND != "vulkan13" && RENDERER_BACKEND != "sdlgpu" {
-	#panic("unsupported Renderer_Backend: expected `vulkan13` or `sdlgpu`")
-}
-
-when RENDERER_BACKEND == "sdlgpu" && pf.Current_Platform_Type != .SDL {
-	#panic("Renderer_Backend=sdlgpu requires Current_Platform_Type=SDL")
+when RENDERER_BACKEND != "vulkan13" {
+	#panic("unsupported Renderer_Backend: use `vulkan13`")
 }
 
 Renderer_Perf_Stats :: struct {
@@ -44,88 +39,25 @@ renderer_backend :: proc() -> string {
 	return RENDERER_BACKEND
 }
 
-vulkan_init :: proc() -> bool {
+init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error {
 	when RENDERER_BACKEND == "vulkan13" {
-		return vulkan13_vulkan_init()
-	}
-	return true
-}
-
-vulkan_shutdown :: proc() {
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_vulkan_shutdown()
-	}
-}
-
-init :: proc(
-	r: ^Renderer,
-	platform: ^pf.Platform,
-	window_size: [2]int,
-	allocator := context.allocator,
-	temp_allocator := context.temp_allocator,
-) {
-	when RENDERER_BACKEND == "vulkan13" {
-		required_extensions := pf.vulkan_required_extensions()
-		vulkan13_init(
-			r,
-			window_size,
-			required_extensions,
-			allocator = allocator,
-			temp_allocator = temp_allocator,
-		)
-		now := time.now()
-		r.perf.last_log_time = now
-		r.perf.fps_last_log = now
-		log.infof(
-			"vulkan13 init: renderer initialized window=%dx%d vk_exts=%d",
-			window_size[0],
-			window_size[1],
-			len(required_extensions),
-		)
-	} else {
-		sdlgpu_init(&r.sdlgpu, platform, window_size)
+		return vulkan13_init(r, info)
 	}
 }
 
 set_vsync :: proc(r: ^Renderer, enabled: bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_set_vsync(r, enabled)
-	} else {
-		sdlgpu_set_vsync(&r.sdlgpu, enabled)
 	}
 }
 
 set_perf_logging :: proc(r: ^Renderer, enabled: bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		r.perf.enabled = enabled
-	} else {
-		sdlgpu_set_perf_logging(&r.sdlgpu, enabled)
 	}
 }
 
-vk_instance :: proc(r: ^Renderer) -> vk.Instance {
-	when RENDERER_BACKEND == "vulkan13" {
-		return r.gpu.instance
-	}
-	return sdlgpu_vk_instance(&r.sdlgpu)
-}
-
-set_surface :: proc(r: ^Renderer, surface: vk.SurfaceKHR) {
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_set_surface(r, surface)
-	} else {
-		sdlgpu_set_vk_surface(&r.sdlgpu, surface)
-	}
-}
-
-font_load :: proc(
-	r: ^Renderer,
-	font_json: []byte,
-	font_msdf: []byte,
-) -> (
-	Font_Face_Handle,
-	bool,
-) {
+font_load :: proc(r: ^Renderer, font_json: []byte, font_msdf: []byte) -> (Font_Face_Handle, bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		font, err := vulkan13_font_load(r, font_json, font_msdf)
 		if err != nil {
@@ -134,45 +66,37 @@ font_load :: proc(
 		}
 		return font, true
 	}
-	return sdlgpu_font_load(&r.sdlgpu, font_json, font_msdf)
 }
 
 start :: proc(r: ^Renderer, cam_pos: [2]f32, cam_zoom: f32) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_start(r, cam_pos, cam_zoom)
-	} else {
-		sdlgpu_start(&r.sdlgpu, cam_pos, cam_zoom)
 	}
 }
 
 begin_screen_mode :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_begin_screen_mode(r)
-	} else {
-		sdlgpu_begin_screen_mode(&r.sdlgpu)
 	}
 }
 
 end_screen_mode :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_end_screen_mode(r)
-	} else {
-		sdlgpu_end_screen_mode(&r.sdlgpu)
 	}
 }
 
 draw_fps :: proc(r: ^Renderer, font: Font_Face_Handle, pos: [2]f32, size: int) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_draw_fps(r, font, pos, size)
-	} else {
-		sdlgpu_draw_fps(&r.sdlgpu, font, pos, size)
 	}
 }
 
-present :: proc(r: ^Renderer) {
+present :: proc(r: ^Renderer) -> Renderer_Error {
 	when RENDERER_BACKEND == "vulkan13" {
 		present_start := time.now()
-		vulkan13_present(r, {0, 0, 0, 255})
+		err := vulkan13_present(r, {0, 0, 0, 255})
+		if err.category != .None do return err
 		present_end := time.now()
 
 		r.perf.fps_frames += 1
@@ -190,7 +114,7 @@ present :: proc(r: ^Renderer) {
 		}
 
 		if !r.perf.enabled {
-			return
+			return {}
 		}
 
 		r.perf.frames += 1
@@ -219,16 +143,14 @@ present :: proc(r: ^Renderer) {
 			r.perf.draw_texts = 0
 			r.perf.present_ms = 0
 		}
-	} else {
-		sdlgpu_present(&r.sdlgpu)
+
+		return {}
 	}
 }
 
 destroy :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_destroy(r)
-	} else {
-		sdlgpu_destroy(&r.sdlgpu)
 	}
 }
 
@@ -236,7 +158,6 @@ window_size :: proc(r: ^Renderer) -> (w, h: f32) {
 	when RENDERER_BACKEND == "vulkan13" {
 		return f32(r.window.width), f32(r.window.height)
 	}
-	return sdlgpu_window_size(&r.sdlgpu)
 }
 
 measure_text_width :: proc(r: ^Renderer, font: Font_Face_Handle, text: string, size: int) -> f32 {
@@ -244,22 +165,17 @@ measure_text_width :: proc(r: ^Renderer, font: Font_Face_Handle, text: string, s
 		metrics := vulkan13_measure_text(r, font, text, size)
 		return metrics.text_rect.w
 	}
-	return sdlgpu_measure_text_width(&r.sdlgpu, font, text, size)
 }
 
 set_scissor :: proc(r: ^Renderer, x, y: i32, w, h: u32) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_set_scissor(r, x, y, w, h)
-	} else {
-		sdlgpu_set_scissor(&r.sdlgpu, x, y, w, h)
 	}
 }
 
 clear_scissor :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_clear_scissor(r)
-	} else {
-		sdlgpu_clear_scissor(&r.sdlgpu)
 	}
 }
 
@@ -269,8 +185,6 @@ draw_rect :: proc(r: ^Renderer, pos: [2]f32, w, h: f32, color: Color) {
 			r.perf.draw_rects += 1
 		}
 		vulkan13_draw_rect(r, pos, w, h, color)
-	} else {
-		sdlgpu_draw_rect(&r.sdlgpu, pos, w, h, color)
 	}
 }
 
@@ -280,8 +194,6 @@ draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
 			r.perf.draw_rects += 1
 		}
 		vulkan13_draw_triangle(r, p1, p2, p3, color)
-	} else {
-		sdlgpu_draw_triangle(&r.sdlgpu, p1, p2, p3, color)
 	}
 }
 
@@ -291,8 +203,6 @@ draw_circle :: proc(r: ^Renderer, position: [2]f32, radius: f32, color: Color) {
 			r.perf.draw_rects += 1
 		}
 		vulkan13_draw_circle(r, position, radius, color)
-	} else {
-		sdlgpu_draw_circle(&r.sdlgpu, position, radius, color)
 	}
 }
 
@@ -302,8 +212,6 @@ draw_line :: proc(r: ^Renderer, from, to: [2]f32, thickness: int, color: Color) 
 			r.perf.draw_lines += 1
 		}
 		vulkan13_draw_line(r, from, to, thickness, color)
-	} else {
-		sdlgpu_draw_line(&r.sdlgpu, from, to, thickness, color)
 	}
 }
 
@@ -328,8 +236,6 @@ draw_lines :: proc(
 		if closed {
 			vulkan13_draw_line(r, points[len(points) - 1], points[0], thickness, color, rounded)
 		}
-	} else {
-		sdlgpu_draw_lines(&r.sdlgpu, thickness, color, closed, rounded, points)
 	}
 }
 
@@ -346,8 +252,6 @@ draw_text :: proc(
 			r.perf.draw_texts += 1
 		}
 		vulkan13_draw_text(r, font, text, pos, size, color)
-	} else {
-		sdlgpu_draw_text(&r.sdlgpu, font, text, pos, size, color)
 	}
 }
 
@@ -358,42 +262,38 @@ draw_image :: proc(
 	scale: [2]f32 = {1, 1},
 	rotation: f32 = 0,
 	uv_rect: Rect = FULL_UV,
+	rgb_tint: [3]u8 = {255, 255, 255},
+	alpha: f32 = 1,
+	is_additive: bool = false,
 ) {
 	when RENDERER_BACKEND == "vulkan13" {
 		if r.perf.enabled {
 			r.perf.draw_images += 1
 		}
-		vulkan13_draw_image(r, texture, position, rotation = rotation, scale = scale, uv_rect = uv_rect)
-	} else {
-		sdlgpu_draw_image(&r.sdlgpu, texture, position, scale, rotation, uv_rect)
+		vulkan13_draw_image(
+			r,
+			texture,
+			position,
+			rotation = rotation,
+			scale = scale,
+			uv_rect = uv_rect,
+			rgb_tint = rgb_tint,
+			alpha = alpha,
+			is_additive = is_additive,
+		)
 	}
 }
 
-texture_load :: proc(
-	r: ^Renderer,
-	pixels: []Color,
-	width, height: int,
-) -> (
-	Texture_Handle,
-	bool,
-) {
+texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> (Texture_Handle, bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		return vulkan13_texture_load(r, pixels, width, height), true
 	}
-	return sdlgpu_texture_load(&r.sdlgpu, pixels, width, height)
 }
 
-texture_get_metrics :: proc(
-	r: ^Renderer,
-	handle: Texture_Handle,
-) -> (
-	Texture_Metrics,
-	bool,
-) {
+texture_get_metrics :: proc(r: ^Renderer, handle: Texture_Handle) -> (Texture_Metrics, bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		return vulkan13_texture_get_metrics(r, handle)
 	}
-	return sdlgpu_texture_get_metrics(&r.sdlgpu, handle)
 }
 
 vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
@@ -418,13 +318,13 @@ vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
 		return false
 	}
 
-	staging_buf_info := vk.BufferCreateInfo{
+	staging_buf_info := vk.BufferCreateInfo {
 		sType       = .BUFFER_CREATE_INFO,
 		size        = vk.DeviceSize(bytes_needed),
 		usage       = {.TRANSFER_DST},
 		sharingMode = .EXCLUSIVE,
 	}
-	staging_alloc_info := vma.Allocation_Create_Info{
+	staging_alloc_info := vma.Allocation_Create_Info {
 		usage = .Gpu_To_Cpu,
 		flags = {.Host_Access_Sequential_Write, .Mapped},
 	}
@@ -432,13 +332,14 @@ vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
 	staging_alloc: vma.Allocation
 	vma_info: vma.Allocation_Info
 	if vma.create_buffer(
-		r.gpu.allocator,
-		staging_buf_info,
-		staging_alloc_info,
-		&staging_buf,
-		&staging_alloc,
-		&vma_info,
-	) != .SUCCESS {
+		   r.gpu.allocator,
+		   staging_buf_info,
+		   staging_alloc_info,
+		   &staging_buf,
+		   &staging_alloc,
+		   &vma_info,
+	   ) !=
+	   .SUCCESS {
 		log.error("vulkan13 debug capture failed: could not create staging buffer")
 		return false
 	}
@@ -462,47 +363,90 @@ vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
 
 	for i in 0 ..< image_count {
 		cmd: vk.CommandBuffer
-		cmd_alloc := vk.CommandBufferAllocateInfo{sType = .COMMAND_BUFFER_ALLOCATE_INFO, commandPool = r.command_pool, commandBufferCount = 1}
+		cmd_alloc := vk.CommandBufferAllocateInfo {
+			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+			commandPool        = r.command_pool,
+			commandBufferCount = 1,
+		}
 		if !vk_assert_local(vk.AllocateCommandBuffers(r.gpu.device, &cmd_alloc, &cmd)) {
 			return false
 		}
 		fence: vk.Fence
-		fence_info := vk.FenceCreateInfo{sType = .FENCE_CREATE_INFO}
+		fence_info := vk.FenceCreateInfo {
+			sType = .FENCE_CREATE_INFO,
+		}
 		if !vk_assert_local(vk.CreateFence(r.gpu.device, &fence_info, nil, &fence)) {
 			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
 			return false
 		}
-		begin_info := vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}
+		begin_info := vk.CommandBufferBeginInfo {
+			sType = .COMMAND_BUFFER_BEGIN_INFO,
+			flags = {.ONE_TIME_SUBMIT},
+		}
 		if !vk_assert_local(vk.BeginCommandBuffer(cmd, &begin_info)) {
 			vk.DestroyFence(r.gpu.device, fence, nil)
 			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
 			return false
 		}
-		to_transfer := vk.ImageMemoryBarrier2{
-			sType = .IMAGE_MEMORY_BARRIER_2, srcStageMask = {.TOP_OF_PIPE}, dstStageMask = {.TRANSFER}, dstAccessMask = {.TRANSFER_READ},
-			oldLayout = .PRESENT_SRC_KHR, newLayout = .TRANSFER_SRC_OPTIMAL, image = r.swapchain.images[i],
+		to_transfer := vk.ImageMemoryBarrier2 {
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.TOP_OF_PIPE},
+			dstStageMask = {.TRANSFER},
+			dstAccessMask = {.TRANSFER_READ},
+			oldLayout = .PRESENT_SRC_KHR,
+			newLayout = .TRANSFER_SRC_OPTIMAL,
+			image = r.swapchain.images[i],
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		dep_a := vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_transfer}
+		dep_a := vk.DependencyInfo {
+			sType                   = .DEPENDENCY_INFO,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers    = &to_transfer,
+		}
 		vk.CmdPipelineBarrier2(cmd, &dep_a)
-		copy_region := vk.BufferImageCopy{
-			imageSubresource = {aspectMask = {.COLOR}, mipLevel = 0, baseArrayLayer = 0, layerCount = 1},
-			imageExtent      = {width = u32(width), height = u32(height), depth = 1},
+		copy_region := vk.BufferImageCopy {
+			imageSubresource = {
+				aspectMask = {.COLOR},
+				mipLevel = 0,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+			imageExtent = {width = u32(width), height = u32(height), depth = 1},
 		}
-		vk.CmdCopyImageToBuffer(cmd, r.swapchain.images[i], .TRANSFER_SRC_OPTIMAL, staging_buf, 1, &copy_region)
-		to_present := vk.ImageMemoryBarrier2{
-			sType = .IMAGE_MEMORY_BARRIER_2, srcStageMask = {.TRANSFER}, srcAccessMask = {.TRANSFER_READ},
-			dstStageMask = {.TOP_OF_PIPE}, oldLayout = .TRANSFER_SRC_OPTIMAL, newLayout = .PRESENT_SRC_KHR,
-			image = r.swapchain.images[i], subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		vk.CmdCopyImageToBuffer(
+			cmd,
+			r.swapchain.images[i],
+			.TRANSFER_SRC_OPTIMAL,
+			staging_buf,
+			1,
+			&copy_region,
+		)
+		to_present := vk.ImageMemoryBarrier2 {
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.TRANSFER},
+			srcAccessMask = {.TRANSFER_READ},
+			dstStageMask = {.TOP_OF_PIPE},
+			oldLayout = .TRANSFER_SRC_OPTIMAL,
+			newLayout = .PRESENT_SRC_KHR,
+			image = r.swapchain.images[i],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		dep_b := vk.DependencyInfo{sType = .DEPENDENCY_INFO, imageMemoryBarrierCount = 1, pImageMemoryBarriers = &to_present}
+		dep_b := vk.DependencyInfo {
+			sType                   = .DEPENDENCY_INFO,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers    = &to_present,
+		}
 		vk.CmdPipelineBarrier2(cmd, &dep_b)
 		if !vk_assert_local(vk.EndCommandBuffer(cmd)) {
 			vk.DestroyFence(r.gpu.device, fence, nil)
 			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
 			return false
 		}
-		submit := vk.SubmitInfo{sType = .SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = &cmd}
+		submit := vk.SubmitInfo {
+			sType              = .SUBMIT_INFO,
+			commandBufferCount = 1,
+			pCommandBuffers    = &cmd,
+		}
 		if !vk_assert_local(vk.QueueSubmit(r.gpu.queue, 1, &submit, fence)) {
 			vk.DestroyFence(r.gpu.device, fence, nil)
 			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
@@ -534,7 +478,14 @@ vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
 	bgra :=
 		r.swapchain.create_info.imageFormat == .B8G8R8A8_UNORM ||
 		r.swapchain.create_info.imageFormat == .B8G8R8A8_SRGB
-	return renderer_capture_write_ppm(path, best_rgba, width, height, bgra_order = bgra, flip_y = false)
+	return renderer_capture_write_ppm(
+		path,
+		best_rgba,
+		width,
+		height,
+		bgra_order = bgra,
+		flip_y = false,
+	)
 }
 
 renderer_capture_ensure_parent_dir :: proc(path: string) -> bool {
@@ -600,4 +551,10 @@ renderer_capture_write_ppm :: proc(
 		return false
 	}
 	return true
+}
+
+window_resize :: proc(r: ^Renderer, width, height: i32) {
+	when RENDERER_BACKEND == "vulkan13" {
+		vulkan13_window_resize(r, width, height)
+	}
 }

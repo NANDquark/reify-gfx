@@ -1,9 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = $PSScriptRoot
+$demoBinary = Join-Path ([System.IO.Path]::GetTempPath()) ("reify-validation-" + [guid]::NewGuid().ToString() + ".exe")
 Push-Location $repoRoot
 try {
-	& odin build demo -define:Reify_Enable_Validation=true
+	& odin build demo "-out:$demoBinary" -define:Reify_Enable_Validation=true
 	if ($LASTEXITCODE -ne 0) {
 		throw "odin build demo failed."
 	}
@@ -12,7 +13,7 @@ try {
 	$previousLayers = $env:VK_INSTANCE_LAYERS
 	$env:VK_INSTANCE_LAYERS = "VK_LAYER_KHRONOS_validation"
 	try {
-		& ".\demo.exe"
+		& $demoBinary
 	} finally {
 		if ($hadLayers) {
 			$env:VK_INSTANCE_LAYERS = $previousLayers
@@ -21,5 +22,6 @@ try {
 		}
 	}
 } finally {
+	Remove-Item $demoBinary -ErrorAction SilentlyContinue
 	Pop-Location
 }
