@@ -134,7 +134,6 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error 
 	if r == nil do return renderer_error(.Platform, .Invalid_State, "renderer pointer is nil")
 	p := info.platform
 	if p.get_framebuffer_size == nil ||
-	   p.vulkan.required_instance_extensions == nil ||
 	   p.vulkan.create_surface == nil ||
 	   p.vulkan.destroy_surface == nil {
 		return renderer_error(
@@ -161,11 +160,10 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error 
 	context.allocator = r.allocator
 	if info.temp_allocator.procedure != nil do context.temp_allocator = info.temp_allocator
 	r.platform = p
+	r.platform.vulkan.required_instance_extensions = nil
 	if !renderer_loader_init() do return renderer_error(.Loader, .Vulkan_Failure, "Vulkan loader unavailable")
 	r.loader_owned = true
-	extensions, platform_err := p.vulkan.required_instance_extensions(p.user_data)
-	if platform_err.message != "" || platform_err.result != .SUCCESS do return renderer_error(.Platform, .Platform_Failure, platform_err.message, platform_err.result)
-	if err := gpu_init(r, extensions); err.category != .None do return err
+	if err := gpu_init(r, p.vulkan.required_instance_extensions); err.category != .None do return err
 	r.swapchain.vsync_enabled = info.config.vsync
 	r.window.width, r.window.height = i32(info.logical_size.x), i32(info.logical_size.y)
 	r.window.projection = vk_ortho_projection(
@@ -648,37 +646,29 @@ gpu_init :: proc(
 		}
 		if !found do return renderer_error(.Instance, .Missing_Extension, string(name), .ERROR_EXTENSION_NOT_PRESENT)
 	}
-	count: u32
-	vk.EnumerateInstanceLayerProperties(&count, nil)
-	layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
-	defer delete(layers_properties, context.temp_allocator)
-	vk.EnumerateInstanceLayerProperties(&count, raw_data(layers_properties))
-	enabled_layers := make([dynamic]cstring, context.temp_allocator)
-	defer delete(enabled_layers)
+	enabled_layers := [1]cstring{"VK_LAYER_KHRONOS_validation"}
+	enabled_layer_count: u32
 	if ENABLE_VK_VALIDATION {
-		desired_layers := []cstring{"VK_LAYER_KHRONOS_validation"}
-		for desired in desired_layers {
-			found := false
-			for &prop in layers_properties {
-				if desired == cstring(&prop.layerName[0]) {
-					found = true
-					break
-				}
-			}
-			if found {
-				append(&enabled_layers, desired)
-			} else {
-				fmt.printf("Warning: Layer %s not found. Skipping...\n", desired)
+		count: u32
+		if res := vk.EnumerateInstanceLayerProperties(&count, nil); res != .SUCCESS do return renderer_error(.Instance, .Vulkan_Failure, "instance layer enumeration failed", res)
+		layers_properties := make([]vk.LayerProperties, count, context.temp_allocator)
+		defer delete(layers_properties, context.temp_allocator)
+		if res := vk.EnumerateInstanceLayerProperties(&count, raw_data(layers_properties)); res != .SUCCESS do return renderer_error(.Instance, .Vulkan_Failure, "instance layer enumeration failed", res)
+		for &prop in layers_properties[:count] {
+			if string(enabled_layers[0]) == string(cstring(&prop.layerName[0])) {
+				enabled_layer_count = 1
+				break
 			}
 		}
+		if enabled_layer_count == 0 do fmt.printf("Warning: Layer %s not found. Skipping...\n", enabled_layers[0])
 	}
 	instance_create_info := &vk.InstanceCreateInfo {
 		sType                   = .INSTANCE_CREATE_INFO,
 		pApplicationInfo        = app_info,
 		enabledExtensionCount   = u32(len(instance_extensions)),
 		ppEnabledExtensionNames = raw_data(instance_extensions),
-		enabledLayerCount       = u32(len(enabled_layers)), // Now dynamically 0 or 1
-		ppEnabledLayerNames     = raw_data(enabled_layers),
+		enabledLayerCount       = enabled_layer_count,
+		ppEnabledLayerNames     = &enabled_layers[0],
 	}
 	if res := vk.CreateInstance(instance_create_info, nil, &dctx.instance); res != .SUCCESS do return renderer_error(.Instance, .Vulkan_Failure, "instance creation failed", res)
 	vk.load_proc_addresses(dctx.instance)
@@ -1061,12 +1051,10 @@ vulkan13_present :: proc(r: ^Renderer, clear_color := Color{255, 0, 255, 255}) -
 }
 
 vulkan13_window_resize :: proc(r: ^Renderer, width, height: i32) {
-	context.allocator = r.allocator
-
+	if r.window.width == width && r.window.height == height do return
 	r.window.width = width
 	r.window.height = height
 	r.window.projection = vk_ortho_projection(0, f32(max(1, width)), 0, f32(max(1, height)), -1, 1)
-	r.swapchain.needs_update = true
 }
 
 FULL_UV :: Rect {

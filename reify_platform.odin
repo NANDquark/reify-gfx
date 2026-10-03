@@ -5,7 +5,9 @@ import vk "vendor:vulkan"
 
 // Callbacks use the calling thread's Odin context and must not reenter the renderer.
 // Host state and the window remain alive until destroy returns. Extension names
-// and platform diagnostics are borrowed through the synchronous callback/init call.
+// remain valid through synchronous initialization; platform diagnostics are borrowed
+// through the synchronous callback call. Hosts query extensions and handle provider
+// errors before init. Reify does not retain extension names after init.
 Platform_Interface :: struct {
 	user_data:            rawptr,
 	get_framebuffer_size: proc(user_data: rawptr) -> ([2]int, Platform_Error),
@@ -13,7 +15,7 @@ Platform_Interface :: struct {
 }
 
 Vulkan_Surface_Interface :: struct {
-	required_instance_extensions: proc(user_data: rawptr) -> ([]cstring, Platform_Error),
+	required_instance_extensions: []cstring,
 	create_surface:               proc(
 		user_data: rawptr,
 		instance: vk.Instance,

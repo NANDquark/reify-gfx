@@ -160,6 +160,7 @@ demo_smoke :: proc(window: glfw.WindowHandle) {
 			)
 			if err.category != .None do panic(re.error_message(&err))
 		}
+		assert(len(renderer.platform.vulkan.required_instance_extensions) == 0)
 		font, ok := re.font_load(&renderer, FONT_ATLAS_JSON_BYTES, FONT_ATLAS_IMG_BYTES)
 		assert(ok)
 		for frame in 0 ..< 48 {
@@ -243,19 +244,17 @@ load_tilemap :: proc() -> ^image.Image {
 
 // GLFW owns the window and runtime; Reify invokes these callbacks synchronously.
 glfw_platform :: proc(window: glfw.WindowHandle) -> re.Platform_Interface {
+	extensions := glfw.GetRequiredInstanceExtensions()
+	if len(extensions) == 0 do panic("GLFW Vulkan instance extensions unavailable")
 	return {
 		user_data = rawptr(window),
 		get_framebuffer_size = glfw_framebuffer_size,
 		vulkan = {
-			required_instance_extensions = glfw_extensions,
+			required_instance_extensions = extensions,
 			create_surface = glfw_surface_create,
 			destroy_surface = glfw_surface_destroy,
 		},
 	}
-}
-
-glfw_extensions :: proc(data: rawptr) -> ([]cstring, re.Platform_Error) {
-	return glfw.GetRequiredInstanceExtensions(), {}
 }
 
 glfw_framebuffer_size :: proc(data: rawptr) -> ([2]int, re.Platform_Error) {

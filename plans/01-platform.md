@@ -74,7 +74,7 @@ Platform_Interface
     vulkan: Vulkan_Surface_Interface
 
 Vulkan_Surface_Interface
-    required_instance_extensions(user_data) -> borrowed extension names or error
+    required_instance_extensions: borrowed []cstring extension names
     create_surface(user_data, instance) -> surface or platform error
     destroy_surface(user_data, instance, surface)
 
@@ -94,9 +94,10 @@ does not import or link either window library and exposes no SDL GPU capability.
 
 Extension names must come from the window provider; do not hardcode X11, Wayland,
 Win32, or display-server environment checks in Reify. Reify validates and combines
-those names with its own backend-required extensions. Copy borrowed names before
-their documented lifetime expires; the simplest contract is validity through
-the synchronous `init` call. Retain no host-owned scratch slices afterward.
+those names with its own backend-required extensions, deduplicating by name.
+Hosts query extensions before `init` and handle provider errors themselves. Names
+and their slice must remain valid through synchronous `init`; Reify retains no
+borrowed extension names or host-owned scratch slices afterward.
 
 Use a consistent Odin callback calling convention and document context handling.
 Callbacks run synchronously on the calling thread, with a valid Odin context;
@@ -115,7 +116,7 @@ Callbacks must not reenter the same renderer.
 
 For Vulkan, initialize in this order:
 
-1. Validate the interface, initialize the loader, and query required extensions.
+1. The host queries extensions; Reify validates the interface and initializes the loader.
 2. Create the Vulkan instance for the selected backend's API baseline.
 3. Invoke `create_surface` with that instance and check its result.
 4. Select a physical device and queues using the actual surface's presentation
@@ -152,7 +153,9 @@ convert scissors with an explicit scale and clamp them to the framebuffer. Audit
 existing camera/screen projection behavior to prevent a high-DPI regression.
 
 The host continues to deliver resize notifications through the public resize
-entry point. Reify queries current framebuffer size before swapchain recreation,
+entry point, which only updates stored logical dimensions and projection and
+returns early for unchanged dimensions. Reify polls framebuffer size for pixel
+changes and queries it before swapchain recreation,
 including after out-of-date results or display-scale changes. A zero extent means
 pause presentation until drawable again, not initialization failure or a busy
 recreation loop. Both Vulkan backends follow the same logical-size contract.

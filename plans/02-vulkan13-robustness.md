@@ -53,9 +53,11 @@ At startup:
 
 1. Resolve loader entry points safely. Query `vkEnumerateInstanceVersion` when
    available; its absence implies a 1.0 loader and cannot satisfy this backend.
-2. Enumerate instance extensions and requested validation layers, checking results
-   and handling changing counts/`VK_INCOMPLETE`. Deduplicate names and distinguish
-   required surface extensions from optional diagnostics.
+2. Enumerate instance extensions and, only when validation is enabled, validation
+   layers, checking results and handling changing counts/`VK_INCOMPLETE`. Preserve
+   the fixed single validation-layer array/enabled count and missing-layer warning
+   from [01-platform-follow-up.md](01-platform-follow-up.md). Deduplicate extension
+   names and distinguish required surface extensions from optional diagnostics.
 3. Require core 1.3 support in both loader and candidate device. Do not require
    historical extension names for functionality already provided by core 1.3.
 4. Query physical-device properties, Vulkan 1.1/1.2/1.3 features/properties, memory

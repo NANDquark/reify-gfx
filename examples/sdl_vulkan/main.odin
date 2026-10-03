@@ -6,6 +6,9 @@ import "core:time"
 import sdl "vendor:sdl3"
 import vk "vendor:vulkan"
 
+EXAMPLE_SMOKE_TEST :: bool(#config(Example_Smoke_Test, false))
+smoke_zero_framebuffer: bool
+
 main :: proc() {
 	if !sdl.Init({.VIDEO}) do panic(string(sdl.GetError()))
 	defer sdl.Quit()
@@ -24,6 +27,7 @@ main :: proc() {
 		{platform = sdl_platform(window), logical_size = {800, 600}, config = {vsync = true}},
 	)
 	if err.category != .None do panic(re.error_message(&err))
+	when EXAMPLE_SMOKE_TEST {assert(len(r.platform.vulkan.required_instance_extensions) == 0)}
 	defer re.destroy(r)
 	frame_limit :: int(#config(Example_Frames, 0))
 	frames := 0
@@ -32,6 +36,22 @@ main :: proc() {
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
 			if event.type == .QUIT do running = false
+		}
+		when EXAMPLE_SMOKE_TEST {
+			switch frames {
+			case 8:
+				if !sdl.SetWindowSize(window, 960, 720) do panic(string(sdl.GetError()))
+			case 16:
+				re.set_vsync(r, false)
+			case 24:
+				if !sdl.MinimizeWindow(window) do panic(string(sdl.GetError()))
+				smoke_zero_framebuffer = true
+			case 32:
+				if !sdl.RestoreWindow(window) do panic(string(sdl.GetError()))
+				smoke_zero_framebuffer = false
+			case 40:
+				re.set_vsync(r, true)
+			}
 		}
 		w, h: c.int
 		if !sdl.GetWindowSize(window, &w, &h) do panic(string(sdl.GetError()))
@@ -49,25 +69,22 @@ main :: proc() {
 }
 
 sdl_platform :: proc(window: ^sdl.Window) -> re.Platform_Interface {
+	count: u32
+	names := sdl.Vulkan_GetInstanceExtensions(&count)
+	if names == nil do panic(string(sdl.GetError()))
 	return {
 		user_data = window,
 		get_framebuffer_size = sdl_framebuffer_size,
 		vulkan = {
-			required_instance_extensions = sdl_extensions,
+			required_instance_extensions = names[:count],
 			create_surface = sdl_surface_create,
 			destroy_surface = sdl_surface_destroy,
 		},
 	}
 }
 
-sdl_extensions :: proc(data: rawptr) -> ([]cstring, re.Platform_Error) {
-	count: u32
-	names := sdl.Vulkan_GetInstanceExtensions(&count)
-	if names == nil do return nil, {message = string(sdl.GetError())}
-	return names[:count], {}
-}
-
 sdl_framebuffer_size :: proc(data: rawptr) -> ([2]int, re.Platform_Error) {
+	when EXAMPLE_SMOKE_TEST {if smoke_zero_framebuffer do return {}, {}}
 	w, h: c.int
 	if !sdl.GetWindowSizeInPixels(cast(^sdl.Window)data, &w, &h) do return {}, {message = string(sdl.GetError())}
 	return {int(w), int(h)}, {}

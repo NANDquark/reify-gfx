@@ -2,7 +2,19 @@
 
 ## Status
 
-`todo` — Implementation has not started.
+`completed` — Logical resize updates dimensions/projection only; surface adapters
+supply borrowed extension slices without retaining names after initialization;
+validation-layer enumeration is conditional, checked, and uses a fixed array/count.
+Platform documentation and stage-2 layer guidance are updated.
+
+Validation: core, GLFW, and SDL checks and all four lifecycle/scissor/resize/layer
+tests passed with validation enabled and disabled (Odin memory tracking enabled).
+Tests cover missing/nil/duplicate extensions, rollback, unchanged/changed logical
+resize, absent validation layers, and both layer-enumeration failure points.
+GLFW smoke and SDL smoke (`Example_Smoke_Test=true`, `Example_Frames=48`) passed
+with Vulkan validation, exercising pixel resize, injected zero-size/restoration,
+vsync changes, and successful-init borrowed-slice release. No validation diagnostics.
+Physical DPI changes, separate queue-family hardware, and Windows remain untested.
 
 Small follow-up to [01-platform.md](01-platform.md), before stage 2.
 

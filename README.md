@@ -48,6 +48,17 @@ Reify uses Vulkan 1.3. See the [GLFW demo](demo/demo.odin) or
 The host window must outlive the renderer. Platform callbacks are defined in
 [reify_platform.odin](reify_platform.odin).
 
+Query the window provider's Vulkan instance extensions before `init` and handle
+provider errors in the host. Supply the borrowed `[]cstring` in
+`platform.vulkan.required_instance_extensions`; names must remain valid until
+`init` returns and are not retained. Reify combines, deduplicates, and validates
+them. The host owns callback state and the window; Reify destroys a successfully
+created surface through the adapter before destroying its instance.
+
+`window_resize` updates logical drawing dimensions/projection only (unchanged
+sizes are a no-op). Pixel-size polling, presentation results, and vsync changes
+drive swapchain recreation. Zero pixel size defers presentation until restored.
+
 ## Shader Tooling
 
 Install `watchexec` if you want live shader rebuilds with the `watch` scripts.
