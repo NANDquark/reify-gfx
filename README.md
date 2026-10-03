@@ -44,7 +44,10 @@ Expected outputs include:
 
 `odin run demo -out:/tmp/reify-demo`
 
-Reify uses Vulkan 1.3. See the [GLFW demo](demo/demo.odin) or
+Reify defaults to Vulkan 1.3. Select the owned Vulkan 1.1 compatibility backend
+at build time with `odin run demo -out:/tmp/opencode/reify11-demo
+-define:Renderer_Backend=vulkan11`. Explicit selection does not fall back.
+Runtime Auto/selection is not implemented yet. See the [GLFW demo](demo/demo.odin) or
 [SDL example](examples/sdl_vulkan/main.odin) for `init(renderer, info)` setup.
 The host window must outlive the renderer. Platform callbacks are defined in
 [reify_platform.odin](reify_platform.odin).
@@ -119,6 +122,52 @@ also passes GPU-assisted validation. This does not certify an entire generation.
 Older drivers and different OS/window-system combinations need separate testing,
 even on newer GPUs. The runtime requirement checks remain authoritative.
 
+## Vulkan 1.1 compatibility backend
+
+`Renderer_Backend=vulkan11` uses Vulkan 1.1 plus surface extensions and
+`VK_KHR_swapchain`, conventional render passes, legacy barriers, binary
+semaphores, and fences. It enables no optional device features. The compatibility
+SPIR-V 1.3 shader exposes only `Shader` capability: no buffer addresses, bindless
+descriptor indexing, draw parameters, int64, or scalar-layout requirement.
+Device/surface checks still apply; version support alone is not sufficient.
+
+Each frame binds an ordinary instance storage buffer (dynamic descriptor offsets
+select aligned chunks) and one buffer of font records. Texture descriptor pools
+grow in 64-set blocks; each texture owns one persistent sampler descriptor.
+The texture quota is a policy cap, not an allocation guarantee. Per-stage sampler
+limits apply to the one bound sampler, not the total number of loaded textures;
+VMA can suballocate their image memory from shared blocks.
+Only adjacent compatible texture draws merge, preserving transparency/additive
+order, font atlases, camera/screen projection, and scissors. Fonts/instances are
+bounded by negotiated storage/index/allocation limits. Shared resource updates
+wait for GPU readers; texture staging is bounded and supports non-coherent memory.
+The public drawing/resource/lifecycle API is unchanged. Debug capture on this
+backend reports unsupported and never requires swapchain transfer-source usage.
+
+Linux x86_64/GLFW, GTX 1070, NVIDIA 580.178.04 is the only tested hardware path.
+Core and synchronization validation pass, including forced 17-instance chunks,
+descriptor-pool growth, resource failures, and repeated lifecycle transitions.
+Both backends produce byte-identical pixels for the integration parity scene:
+overlapping/interleaved translucent and additive sprites, UV crops/rotation,
+shapes, MSDF text, camera transforms, screen mode, and clipped boundaries.
+This readback test uses optional transfer-source support only in its test fixture.
+An actual older Vulkan 1.1/1.2 driver/device, AMD, Intel, Windows, and separate
+graphics/present families remain untested; stage 3's hardware gate remains open.
+
+Sample CPU costs for 10,000 sprites (unoptimized Odin tests, 8 frames after
+warmup; timing is illustrative, not a portable benchmark):
+
+| Backend / texture pattern | Draws/frame | CPU draw-list build | `present` wall time |
+| --- | ---: | ---: | ---: |
+| Vulkan 1.3 / one texture | 1 | 0.904 ms | 10.548 ms |
+| Vulkan 1.3 / alternating two textures | 1 | 0.860 ms | 15.734 ms |
+| Vulkan 1.1 / one texture | 1 | 1.166 ms | 11.170 ms |
+| Vulkan 1.1 / alternating two textures | 10,000 | 1.984 ms | 11.535 ms |
+
+`present` includes acquisition/presentation pacing and is not GPU execution time.
+Compatibility prioritizes parity over bindless throughput. Alternating textures
+increase draw calls and CPU batching/recording work; atlas-friendly scenes merge.
+
 ## Tests
 
 Run package tests with `odin test . -out:/tmp/opencode/reify-tests`.
@@ -137,10 +186,33 @@ invalid dimensions, capacities, submission failures, pending uploads, and device
 Platform scenarios cover repeated renderer lifetimes, resize callbacks, vsync
 transitions, minimize/restore, and resource loading during zero-framebuffer startup.
 
+Run the same integration suite on the compatibility backend, forcing chunk
+boundaries and enabling synchronization validation on Linux:
+
+```sh
+VK_LAYER_VALIDATE_SYNC=1 odin test . -out:/tmp/opencode/reify11-integration \
+  -define:Renderer_Backend=vulkan11 -define:Reify_Integration_Test=true \
+  -define:Reify_Enable_Validation=true -define:Reify_Vulkan11_Chunk_Instances=17
+```
+
+For pixel comparisons, run `integration_backend_parity` separately per backend
+with `-define:ODIN_TEST_NAMES=reify.integration_backend_parity` and set
+`REIFY_PARITY_OUTPUT` to a different `/tmp/opencode/*.ppm` path per run. Compare
+the files with `cmp`; equal framebuffer extents are required. Test readback
+requires optional surface transfer-source support. The CPU/draw-call measurement
+is `reify.integration_texture_batch_cost` (run without forced small chunks for
+the table above). `Reify_Vulkan11_Chunk_Instances` is a build-time maximum chunk
+size for testing/tuning, not a runtime backend preference.
+
 ## Shader Tooling
 
 Install `watchexec` if you want live shader rebuilds with the `watch` scripts.
 `shader_compile` scripts require Slang, SPIR-V Tools, and Odin.
+They emit separate `quad_vulkan13.spv` (SPIR-V 1.6/Vulkan 1.3) and
+`quad_vulkan11.spv` (SPIR-V 1.3/Vulkan 1.1), audit capabilities/member layouts,
+and generate common records plus separate `Quad11_Push_Constants` from reflection.
+Backend sources are `quad_vulkan13.slang` and `quad_vulkan11.slang`; record and
+shading logic is shared in `quad_common.slang`.
 
 Linux shell:
 

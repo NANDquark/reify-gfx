@@ -60,6 +60,8 @@ effective_limits :: proc(r: ^Renderer) -> Negotiated_Limits {
 	if r == nil || !r.initialized do return {}
 	when RENDERER_BACKEND == "vulkan13" {
 		return r.backend.gpu.limits
+	} else when RENDERER_BACKEND == "vulkan11" {
+		return r.backend.gpu.limits
 	}
 }
 
@@ -79,6 +81,9 @@ memory_summary :: proc(r: ^Renderer) -> Memory_Summary {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_refresh_memory(&r.backend.gpu)
 		return vulkan13_memory_summary(&r.backend.gpu)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_refresh_memory(&r.backend.gpu)
+		return vulkan11_memory_summary(&r.backend.gpu)
 	}
 }
 
@@ -142,7 +147,7 @@ error_message :: proc(err: ^Renderer_Error) -> string {
 renderer_log_error :: proc(err: Renderer_Error) {
 	if err.category == .None do return
 	err := err
-	log.errorf("reify %v: %v (%v, %v)", err.stage, error_message(&err), err.category, err.result)
+	log.errorf("reify %s %v: %v (%v, %v)", RENDERER_BACKEND, err.stage, error_message(&err), err.category, err.result)
 }
 
 @(private)

@@ -119,12 +119,12 @@ platform_scissor_scaling :: proc(t: ^testing.T) {
 	r.swapchain.create_info.imageExtent = {1600, 900}
 	testing.expect_value(
 		t,
-		vulkan13_pixel_scissor(r, {offset = {-10, 10}, extent = {110, 20}}),
+		test_pixel_scissor(r, {offset = {-10, 10}, extent = {110, 20}}),
 		vk.Rect2D{offset = {0, 15}, extent = {200, 30}},
 	)
 	testing.expect_value(
 		t,
-		vulkan13_pixel_scissor(r, {offset = {900, 700}, extent = {max(u32), max(u32)}}),
+		test_pixel_scissor(r, {offset = {900, 700}, extent = {max(u32), max(u32)}}),
 		vk.Rect2D{offset = {1600, 900}, extent = {0, 0}},
 	)
 }
@@ -299,6 +299,7 @@ test_surface_create :: proc(
 	test_saved_surface_modes = vk.GetPhysicalDeviceSurfacePresentModesKHR
 	test_saved_surface_caps = vk.GetPhysicalDeviceSurfaceCapabilitiesKHR
 	test_saved_features = vk.GetPhysicalDeviceFeatures2
+	test_saved_properties = vk.GetPhysicalDeviceProperties2
 	test_candidate_queries, test_candidate_creations = 0, 0
 	test_candidate_mode = state.mode
 	vk.GetPhysicalDeviceSurfaceFormatsKHR = test_surface_formats
@@ -317,7 +318,11 @@ test_surface_create :: proc(
 		vk.CreateDevice = test_device_failure
 	case .Incompatible_First, .Retry_Candidate:
 		vk.EnumeratePhysicalDevices = test_multiple_devices
-		vk.GetPhysicalDeviceFeatures2 = test_candidate_features
+		when RENDERER_BACKEND == "vulkan13" {
+			vk.GetPhysicalDeviceFeatures2 = test_candidate_features
+		} else {
+			vk.GetPhysicalDeviceProperties2 = test_candidate_properties
+		}
 		vk.GetPhysicalDeviceSurfaceSupportKHR = test_surface_supported
 		vk.CreateDevice = test_candidate_device
 		vk.GetDeviceProcAddr = test_resource_proc
@@ -338,6 +343,7 @@ test_surface_destroy :: proc(data: rawptr, instance: vk.Instance, surface: vk.Su
 	vk.GetPhysicalDeviceSurfacePresentModesKHR = test_saved_surface_modes
 	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR = test_saved_surface_caps
 	vk.GetPhysicalDeviceFeatures2 = test_saved_features
+	vk.GetPhysicalDeviceProperties2 = test_saved_properties
 	count: u32
 	state.instance_alive_at_destroy =
 		vk.EnumeratePhysicalDevices(instance, &count, nil) == .SUCCESS
@@ -396,6 +402,7 @@ test_surface_unsupported :: proc "system" (
 }
 
 test_saved_features: vk.ProcGetPhysicalDeviceFeatures2
+test_saved_properties: vk.ProcGetPhysicalDeviceProperties2
 test_candidate_queries, test_candidate_creations: int
 test_candidate_mode: Platform_Test_Mode
 
@@ -425,7 +432,27 @@ test_candidate_features :: proc "system" (
 ) {
 	test_saved_features(pd, features)
 	test_candidate_queries += 1
-	if test_candidate_mode == .Incompatible_First && test_candidate_queries == 1 do (cast(^vk.PhysicalDeviceVulkan13Features)features[0].pNext).dynamicRendering = false
+	when RENDERER_BACKEND == "vulkan13" {
+		if test_candidate_mode == .Incompatible_First && test_candidate_queries == 1 {
+			(cast(^vk.PhysicalDeviceVulkan13Features)features[0].pNext).dynamicRendering = false
+		}
+	}
+}
+
+test_candidate_properties :: proc "system" (pd: vk.PhysicalDevice, props: [^]vk.PhysicalDeviceProperties2) {
+	test_saved_properties(pd, props)
+	test_candidate_queries += 1
+	if test_candidate_mode == .Incompatible_First && test_candidate_queries == 1 {
+		props[0].properties.apiVersion = vk.API_VERSION_1_0
+	}
+}
+
+test_pixel_scissor :: proc(r: ^Renderer, scissor: vk.Rect2D) -> vk.Rect2D {
+	when RENDERER_BACKEND == "vulkan13" {
+		return vulkan13_pixel_scissor(r, scissor)
+	} else {
+		return vulkan11_pixel_scissor(r, scissor)
+	}
 }
 
 test_candidate_device :: proc "system" (

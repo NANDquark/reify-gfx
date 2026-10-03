@@ -2,13 +2,27 @@
 
 ## Status
 
-`in-progress` — The initial Renderer/state split is implemented as a separate
-checkpoint, before Vulkan 1.1 backend work. `Renderer` and common lifecycle
-ownership live in `reify.odin`; Vulkan 1.3 GPU state is isolated in
-`Vulkan13_Renderer_State`. The public value/handle types are moved to the facade,
-and Vulkan 1.3 capture remains backend-owned. The compatibility backend,
-shader/tooling, remaining neutral-code extraction, and parity validation are
-not implemented yet. Checkpoint verification is recorded below.
+`in-progress` — The build-selected Vulkan 1.1 backend, isolated state, conventional
+render passes, legacy synchronization, frame-owned storage-buffer chunks,
+persistent texture descriptors/growable pools, ordered batching, and public API
+dispatch are implemented. Public drawing procedures live in `reify_drawing.odin`;
+facade performance accounting/resource error handling surround backend-only calls.
+Font layout/records and color conversion are shared;
+GPU orchestration, uploads, batching, and capture remain backend-owned. Separate
+SPIR-V 1.3 tooling validates the compatibility shader with only `Shader` capability.
+
+Available Linux/GLFW GTX 1070 validation covers both backends, lifecycle/resource
+failures, pool growth, and forced 17-instance chunks. The representative parity
+scene produces byte-identical readback images on both backends. Core package,
+GLFW demo, and SDL example compile checks pass with each build selection. All
+16 Vulkan 1.3 and 12 Vulkan 1.1 package tests pass; integration suites pass 34 and
+31 tests respectively, including synchronization validation with no reported
+errors. The 31-test Vulkan 1.1 suite also passes with forced 17-instance chunks;
+all three shader-audit tests pass. CPU batch-cost measurements/reproduction are in
+README. The compatibility delivery gate remains open: an actual older Vulkan
+1.1/1.2 driver/device is not
+available. AMD, Intel, Windows, and separate-family real-device paths are also
+unverified; API 1.1 requests on this NVIDIA driver do not establish that coverage.
 
 ### Separate initial checkpoint: Renderer/state split
 
@@ -42,7 +56,7 @@ Select it through the existing compile-time `Renderer_Backend` config:
 odin run demo -define:Renderer_Backend=vulkan11
 ```
 
-This is a proposed implementation plan; the backend does not exist yet.
+This document records the stage-3 design and its remaining validation gate.
 Retain only Reify-owned `vulkan13` and `vulkan11` backends; retire SDL GPU.
 Applications should use the same public drawing, texture, font, camera, and
 scissor APIs with either Vulkan backend. The command above describes an interim
@@ -79,7 +93,7 @@ tested against representative devices and drivers.
 
 The relevant starting points are `reify.odin` (config and dispatch),
 `reify_vulkan13.odin` (renderer state and implementation),
-`reify_vulkan_helpers.odin`, and `assets/quad.slang`.
+`reify_vulkan_helpers.odin`, and `assets/quad_vulkan13.slang`.
 
 1. Accept `vulkan11` in config validation and add explicit dispatch branches for
    every public operation. SDL GPU dispatch is already removed in stage 1.
@@ -224,7 +238,7 @@ constraints and are not required for the first implementation.
 Add a distinct compatibility shader/artifact, for example
 `assets/quad_vulkan11.slang` and `assets/quad_vulkan11.spv`. Share pure shading
 functions and record definitions where practical; isolate binding declarations
-and instance access. Do not replace `quad.spv` used by the existing backend.
+and instance access. 
 
 Update both shader compile scripts to emit an explicit Vulkan 1.1-compatible
 SPIR-V target (no newer than SPIR-V 1.3). Validate with
@@ -273,5 +287,5 @@ Acceptance checks:
 - [Vulkan descriptor arrays](https://docs.vulkan.org/guide/latest/descriptor_arrays.html)
 - [Vulkan support checks](https://docs.vulkan.org/guide/latest/checking_for_support.html)
 
-The storage-buffer and texture-batch design above is a proposal specific to this
+The storage-buffer and texture-batch design above is specific to this
 renderer, not a compatibility guarantee supplied by those references.

@@ -1,6 +1,6 @@
 package reify
 
-// Generated: 2026-03-07 06:18:43.919868647 +0000 UTC
+// Generated: 2026-10-03 17:11:09.623698762 +0000 UTC
 // TODO: automatic padding based on slang offsets & sizes!
 
 import vk "vendor:vulkan"
@@ -38,4 +38,8 @@ Quad_Instance_Type :: enum u8 {
 	Circle = 2,
 	Triangle = 3,
 	MSDF = 4,
+}
+
+Quad11_Push_Constants :: struct #align (16) {
+    projection_view: Mat4f,
 }

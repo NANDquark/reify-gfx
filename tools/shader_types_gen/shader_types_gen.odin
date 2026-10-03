@@ -9,6 +9,7 @@ import "core:strings"
 import "core:time"
 
 QUAD_SHADER_TYPES_BYTES :: #load("../../assets/quad_shader_types.json")
+QUAD11_SHADER_TYPES_BYTES :: #load("../../assets/quad_vulkan11_shader_types.json")
 
 main :: proc() {
 	run_error := run()
@@ -76,6 +77,11 @@ run :: proc() -> Error {
 				},
 			},
 			prefix = "Quad_",
+		},
+		{
+			bytes = QUAD11_SHADER_TYPES_BYTES,
+			names = {"Push_Constants"},
+			prefix = "Quad11_",
 		},
 	}
 
@@ -155,6 +161,7 @@ run :: proc() -> Error {
 	}
 
 	odin_code := strings.to_string(sb)
+	for strings.has_suffix(odin_code, "\n\n") do odin_code = odin_code[:len(odin_code) - 1]
 	curr_dir := #directory
 	outfile_path, _ := filepath.join(
 		[]string{curr_dir, "../../reify_shader_types.odin"},

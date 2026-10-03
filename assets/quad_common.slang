@@ -47,41 +47,17 @@ struct VertexOutput {
   nointerpolation uint32_t instance_index;
 };
 
-const static uint MAX_INSTANCES = 100 * 1024;
-
-struct Shader_Data {
-  Instance instances[MAX_INSTANCES];
-};
-
-struct Push_Constants {
-  column_major float4x4 projection_view; // combined once on CPU
-  Shader_Data *data;
-};
-
-// Expose to the reflection_types JSON output since this type is not actually
-// directly used anywhere
-StructuredBuffer<Shader_Data> _ReflectionAnchor;
-
-[[vk::push_constant]]
-Push_Constants pc;
-
-[[vk::binding(0, 0)]]
-Sampler2D textures[];
-
-[[vk::binding(1, 0)]]
-StructuredBuffer<Font> fonts;
-
 // This is using a vertex-pulling strategy using a structured buffer where
 // each sprite has one entry. Then we use the SV_VertexID and indexed drawing
 // to expand each sprite into 4 vertices. The div and modulo below converts
 // the vertex ID to find the instance data.
 [shader("vertex")]
-VertexOutput vertMain(uint vID: SV_VertexID) {
+VertexOutput vertMain(uint vID: VERTEX_ID_SEMANTIC) {
   VertexOutput output;
 
   uint instanceIndex = vID / 4;
   uint cornerIndex = vID % 4;
-  Instance instance = pc.data->instances[instanceIndex];
+  Instance instance = get_instance(instanceIndex);
 
   float2 finalWorldPos;
   float2 finalUV = float2(0.0, 0.0);
@@ -122,11 +98,11 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
 [shader("fragment")]
 float4 fragMain(VertexOutput input) {
   // using pre-multiplied alpha so additive effects use the same pipeline
-  Instance instance = pc.data->instances[input.instance_index];
+  Instance instance = get_instance(input.instance_index);
   Instance_Type instance_type = Instance_Type(instance.type);
 
   if (instance_type == Instance_Type.Sprite) {
-    float4 texColor = textures[NonUniformResourceIndex(input.texture_index)].Sample(input.uv);
+    float4 texColor = sample_texture(input.texture_index, input.uv);
     return texColor * instance.color;
   }
 
@@ -138,7 +114,7 @@ float4 fragMain(VertexOutput input) {
 
   if (instance_type == Instance_Type.MSDF) {
     Font font = fonts[instance.font_index];
-    float3 msdf = textures[NonUniformResourceIndex(instance.texture_index)].Sample(input.uv).rgb;
+    float3 msdf = sample_texture(instance.texture_index, input.uv).rgb;
     float a = msdf_coverage(msdf, input.uv, font.tex_size, font.px_range);
     return instance.color * a;
   }

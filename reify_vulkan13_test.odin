@@ -5,6 +5,8 @@ import "core:log"
 import "core:testing"
 import vk "vendor:vulkan"
 
+when RENDERER_BACKEND == "vulkan13" {
+
 @(test)
 vulkan13_cleanup_preserves_facade :: proc(t: ^testing.T) {
 	r := new(Renderer)
@@ -311,4 +313,6 @@ robustness_extensions :: proc "system" (
 	}
 	items[0], items[1], count^ = {}, {}, 2
 	return .SUCCESS
+}
+
 }

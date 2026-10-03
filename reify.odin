@@ -11,8 +11,8 @@ import vk "vendor:vulkan"
 
 RENDERER_BACKEND :: string(#config(Renderer_Backend, "vulkan13"))
 
-when RENDERER_BACKEND != "vulkan13" {
-	#panic("unsupported Renderer_Backend: use `vulkan13`")
+when RENDERER_BACKEND != "vulkan13" && RENDERER_BACKEND != "vulkan11" {
+	#panic("unsupported Renderer_Backend: use `vulkan13` or `vulkan11`")
 }
 
 renderer_backend :: proc() -> string {
@@ -33,13 +33,16 @@ Renderer :: struct {
 		height:     i32,
 		projection: Mat4f,
 	},
-	perf: Renderer_Perf_Stats,
-	using backend: Renderer_Backend_State,
+	perf:             Renderer_Perf_Stats,
+	using backend:    Renderer_Backend_State,
 }
 
 when RENDERER_BACKEND == "vulkan13" {
 	@(private)
 	Renderer_Backend_State :: Vulkan13_Renderer_State
+} else when RENDERER_BACKEND == "vulkan11" {
+	@(private)
+	Renderer_Backend_State :: Vulkan11_Renderer_State
 }
 
 Mat4f :: matrix[4, 4]f32
@@ -50,7 +53,12 @@ Rect :: struct {
 	x, y, w, h: f32,
 }
 
-FULL_UV :: Rect {x = 0, y = 0, w = 1, h = 1}
+FULL_UV :: Rect {
+	x = 0,
+	y = 0,
+	w = 1,
+	h = 1,
+}
 
 Texture_Handle :: struct {
 	idx: int,
@@ -93,7 +101,11 @@ renderer_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error 
 	   info.logical_size.y < 0 ||
 	   info.logical_size.x > int(max(i32)) ||
 	   info.logical_size.y > int(max(i32)) {
-		return renderer_error(.Platform, .Invalid_State, "logical dimensions must fit nonnegative i32")
+		return renderer_error(
+			.Platform,
+			.Invalid_State,
+			"logical dimensions must fit nonnegative i32",
+		)
 	}
 	_, reserved := sync.atomic_compare_exchange_strong(&active_renderer, cast(^Renderer)nil, r)
 	if !reserved {
@@ -117,10 +129,13 @@ renderer_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error 
 	}
 	r.loader_owned = true
 	r.window.width, r.window.height = i32(info.logical_size.x), i32(info.logical_size.y)
+	backend_error: Renderer_Error
 	when RENDERER_BACKEND == "vulkan13" {
-		backend_error := vulkan13_init(r, info)
-		if backend_error.category != .None do return backend_error
+		backend_error = vulkan13_init(r, info)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		backend_error = vulkan11_init(r, info)
 	}
+	if backend_error.category != .None do return backend_error
 	r.initialized = true
 	now := time.now()
 	r.perf.last_log_time, r.perf.fps_last_log = now, now
@@ -131,13 +146,13 @@ renderer_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error 
 set_vsync :: proc(r: ^Renderer, enabled: bool) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_set_vsync(r, enabled)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_set_vsync(r, enabled)
 	}
 }
 
 set_perf_logging :: proc(r: ^Renderer, enabled: bool) {
-	when RENDERER_BACKEND == "vulkan13" {
-		r.perf.enabled = enabled
-	}
+	r.perf.enabled = enabled
 }
 
 @(require_results)
@@ -147,109 +162,110 @@ font_load :: proc(r: ^Renderer, font_json: []byte, font_msdf: []byte) -> (Font_F
 		return {idx = -1}, false
 	}
 
+	font: Font_Face_Handle
+	err: Font_Atlas_Error
 	when RENDERER_BACKEND == "vulkan13" {
-		font, err := vulkan13_font_load(r, font_json, font_msdf)
-		if err != nil {
-			gpu_err, ok := err.(Renderer_Error)
-			if ok {
-				renderer_log_error(gpu_err)
-			} else {
-				log.errorf("reify font_load: %v", err)
-			}
-			return {idx = -1}, false
-		}
-		return font, true
+		font, err = vulkan13_font_load(r, font_json, font_msdf)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		font, err = vulkan11_font_load(r, font_json, font_msdf)
 	}
-
-	return {}, false
+	if err != nil {
+		gpu_err, ok := err.(Renderer_Error)
+		if ok {
+			renderer_log_error(gpu_err)
+		} else {
+			log.errorf("reify font_load: %v", err)
+		}
+		return {idx = -1}, false
+	}
+	return font, true
 }
 
 start :: proc(r: ^Renderer, cam_pos: [2]f32, cam_zoom: f32) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_start(r, cam_pos, cam_zoom)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_start(r, cam_pos, cam_zoom)
 	}
 }
 
 begin_screen_mode :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_begin_screen_mode(r)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_begin_screen_mode(r)
 	}
 }
 
 end_screen_mode :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_end_screen_mode(r)
-	}
-}
-
-draw_fps :: proc(r: ^Renderer, font: Font_Face_Handle, pos: [2]f32, size: int) {
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_draw_fps(r, font, pos, size)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_end_screen_mode(r)
 	}
 }
 
 @(require_results)
 present :: proc(r: ^Renderer) -> bool {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r != nil && r.initialized && r.frame_failed && !r.stopped {
-			r.frame_started = false
-			return false
-		}
-		present_start := time.now()
-		err := vulkan13_present(r, {0, 0, 0, 255})
-		if err.category != .None {
-			renderer_log_error(err)
-			return false
-		}
-		present_end := time.now()
-
-		r.perf.fps_frames += 1
-		fps_elapsed := time.diff(r.perf.fps_last_log, present_end)
-		if fps_elapsed >= time.Second {
-			secs := f32(fps_elapsed) / f32(time.Second)
-			if secs > 0 {
-				r.perf.fps_value = f32(r.perf.fps_frames) / secs
-			}
-			if r.perf.enabled {
-				log.infof("fps: %.1f", r.perf.fps_value)
-			}
-			r.perf.fps_frames = 0
-			r.perf.fps_last_log = present_end
-		}
-
-		if !r.perf.enabled {
-			return true
-		}
-
-		r.perf.frames += 1
-		r.perf.present_ms += f64(time.duration_milliseconds(time.diff(present_start, present_end)))
-		elapsed := time.diff(r.perf.last_log_time, present_end)
-		if elapsed >= time.Second {
-			frames := r.perf.frames
-			if frames <= 0 {
-				frames = 1
-			}
-			log.infof(
-				"vulkan13 perf: imgs/frame=%.1f rects/frame=%.1f lines/frame=%.1f linesets/frame=%.1f texts/frame=%.1f present=%.2fms",
-				f64(r.perf.draw_images) / f64(frames),
-				f64(r.perf.draw_rects) / f64(frames),
-				f64(r.perf.draw_lines) / f64(frames),
-				f64(r.perf.draw_linesets) / f64(frames),
-				f64(r.perf.draw_texts) / f64(frames),
-				r.perf.present_ms / f64(frames),
-			)
-			r.perf.last_log_time = present_end
-			r.perf.frames = 0
-			r.perf.draw_images = 0
-			r.perf.draw_rects = 0
-			r.perf.draw_lines = 0
-			r.perf.draw_linesets = 0
-			r.perf.draw_texts = 0
-			r.perf.present_ms = 0
-		}
-
-		return true
+	if r != nil && r.initialized && r.frame_failed && !r.stopped {
+		r.frame_started = false
+		return false
 	}
+	present_start := time.now()
+	err: Renderer_Error
+	when RENDERER_BACKEND == "vulkan13" {
+		err = vulkan13_present(r, {0, 0, 0, 255})
+	} else when RENDERER_BACKEND == "vulkan11" {
+		err = vulkan11_present(r, {0, 0, 0, 255})
+	}
+	if err.category != .None {
+		renderer_log_error(err)
+		return false
+	}
+	present_end := time.now()
+
+	r.perf.fps_frames += 1
+	fps_elapsed := time.diff(r.perf.fps_last_log, present_end)
+	if fps_elapsed >= time.Second {
+		secs := f32(fps_elapsed) / f32(time.Second)
+		if secs > 0 {
+			r.perf.fps_value = f32(r.perf.fps_frames) / secs
+		}
+		if r.perf.enabled {
+			log.infof("fps: %.1f", r.perf.fps_value)
+		}
+		r.perf.fps_frames = 0
+		r.perf.fps_last_log = present_end
+	}
+
+	if !r.perf.enabled do return true
+	r.perf.frames += 1
+	r.perf.present_ms += f64(time.duration_milliseconds(time.diff(present_start, present_end)))
+	elapsed := time.diff(r.perf.last_log_time, present_end)
+	if elapsed >= time.Second {
+		frames := max(1, r.perf.frames)
+		log.infof(
+			"%s perf: imgs/frame=%.1f rects/frame=%.1f lines/frame=%.1f linesets/frame=%.1f texts/frame=%.1f draws/frame=%.1f present=%.2fms",
+			RENDERER_BACKEND,
+			f64(r.perf.draw_images) / f64(frames),
+			f64(r.perf.draw_rects) / f64(frames),
+			f64(r.perf.draw_lines) / f64(frames),
+			f64(r.perf.draw_linesets) / f64(frames),
+			f64(r.perf.draw_texts) / f64(frames),
+			f64(r.perf.draw_calls) / f64(frames),
+			r.perf.present_ms / f64(frames),
+		)
+		r.perf.last_log_time = present_end
+		r.perf.frames = 0
+		r.perf.draw_images = 0
+		r.perf.draw_rects = 0
+		r.perf.draw_lines = 0
+		r.perf.draw_linesets = 0
+		r.perf.draw_texts = 0
+		r.perf.present_ms = 0
+		r.perf.draw_calls = 0
+	}
+	return true
 }
 
 destroy :: proc(r: ^Renderer) {
@@ -264,6 +280,8 @@ renderer_cleanup :: proc(r: ^Renderer) {
 	if r.loader_owned {
 		when RENDERER_BACKEND == "vulkan13" {
 			vulkan13_destroy(r)
+		} else when RENDERER_BACKEND == "vulkan11" {
+			vulkan11_destroy(r)
 		}
 		renderer_loader_shutdown()
 	}
@@ -318,132 +336,40 @@ renderer_loader_shutdown :: proc() {
 }
 
 window_size :: proc(r: ^Renderer) -> (w, h: f32) {
+	return f32(r.window.width), f32(r.window.height)
+}
+
+window_resize :: proc(r: ^Renderer, width, height: i32) {
 	when RENDERER_BACKEND == "vulkan13" {
-		return f32(r.window.width), f32(r.window.height)
+		vulkan13_window_resize(r, width, height)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_window_resize(r, width, height)
 	}
 }
 
 measure_text_width :: proc(r: ^Renderer, font: Font_Face_Handle, text: string, size: int) -> f32 {
+	metrics: Font_Metrics
 	when RENDERER_BACKEND == "vulkan13" {
-		metrics := vulkan13_measure_text(r, font, text, size)
-		return metrics.text_rect.w
+		metrics = vulkan13_measure_text(r, font, text, size)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		metrics = vulkan11_measure_text(r, font, text, size)
 	}
+	return metrics.text_rect.w
 }
 
 set_scissor :: proc(r: ^Renderer, x, y: i32, w, h: u32) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_set_scissor(r, x, y, w, h)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_set_scissor(r, x, y, w, h)
 	}
 }
 
 clear_scissor :: proc(r: ^Renderer) {
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_clear_scissor(r)
-	}
-}
-
-draw_rect :: proc(r: ^Renderer, pos: [2]f32, w, h: f32, color: Color) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_rects += 1
-		}
-		vulkan13_draw_rect(r, pos, w, h, color)
-	}
-}
-
-draw_triangle :: proc(r: ^Renderer, p1, p2, p3: [2]f32, color: Color) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_rects += 1
-		}
-		vulkan13_draw_triangle(r, p1, p2, p3, color)
-	}
-}
-
-draw_circle :: proc(r: ^Renderer, position: [2]f32, radius: f32, color: Color) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_rects += 1
-		}
-		vulkan13_draw_circle(r, position, radius, color)
-	}
-}
-
-draw_line :: proc(r: ^Renderer, from, to: [2]f32, thickness: int, color: Color) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_lines += 1
-		}
-		vulkan13_draw_line(r, from, to, thickness, color)
-	}
-}
-
-draw_lines :: proc(
-	r: ^Renderer,
-	thickness: int,
-	color: Color,
-	closed: bool,
-	rounded: bool,
-	points: [][2]f32,
-) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_linesets += 1
-		}
-		if len(points) < 2 || thickness <= 0 {
-			return
-		}
-		for i in 0 ..< len(points) - 1 {
-			vulkan13_draw_line(r, points[i], points[i + 1], thickness, color, rounded)
-		}
-		if closed {
-			vulkan13_draw_line(r, points[len(points) - 1], points[0], thickness, color, rounded)
-		}
-	}
-}
-
-draw_text :: proc(
-	r: ^Renderer,
-	font: Font_Face_Handle,
-	text: string,
-	pos: [2]f32,
-	size: int,
-	color: Color,
-) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_texts += 1
-		}
-		vulkan13_draw_text(r, font, text, pos, size, color)
-	}
-}
-
-draw_image :: proc(
-	r: ^Renderer,
-	texture: Texture_Handle,
-	position: [2]f32,
-	scale: [2]f32 = {1, 1},
-	rotation: f32 = 0,
-	uv_rect: Rect = FULL_UV,
-	rgb_tint: [3]u8 = {255, 255, 255},
-	alpha: f32 = 1,
-	is_additive: bool = false,
-) {
-	when RENDERER_BACKEND == "vulkan13" {
-		if r.perf.enabled {
-			r.perf.draw_images += 1
-		}
-		vulkan13_draw_image(
-			r,
-			texture,
-			position,
-			rotation = rotation,
-			scale = scale,
-			uv_rect = uv_rect,
-			rgb_tint = rgb_tint,
-			alpha = alpha,
-			is_additive = is_additive,
-		)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		vulkan11_clear_scissor(r)
 	}
 }
 
@@ -454,22 +380,26 @@ texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> (Text
 		return {idx = -1}, false
 	}
 
+	handle: Texture_Handle
+	err: Renderer_Error
 	when RENDERER_BACKEND == "vulkan13" {
-		handle, err := vulkan13_texture_load(r, pixels, width, height)
-		if err.category != .None {
-			renderer_log_error(err)
-			return handle, false
-		}
-		return handle, true
+		handle, err = vulkan13_texture_load(r, pixels, width, height)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		handle, err = vulkan11_texture_load(r, pixels, width, height)
 	}
-
-	return {}, false
+	if err.category != .None {
+		renderer_log_error(err)
+		return handle, false
+	}
+	return handle, true
 }
 
 texture_get_metrics :: proc(r: ^Renderer, handle: Texture_Handle) -> (Texture_Metrics, bool) {
 	if r == nil || !r.initialized do return {}, false
 	when RENDERER_BACKEND == "vulkan13" {
 		return vulkan13_texture_get_metrics(r, handle)
+	} else when RENDERER_BACKEND == "vulkan11" {
+		return vulkan11_texture_get_metrics(r, handle)
 	}
 }
 
@@ -530,6 +460,7 @@ renderer_capture_write_ppm :: proc(
 
 	header := fmt.tprintf("P6\n%d %d\n255\n", width, height)
 	out := make([]u8, len(header) + width * height * 3)
+	defer delete(out)
 	copy(out[:len(header)], transmute([]u8)header)
 	dst_idx := len(header)
 	for y in 0 ..< height {
@@ -560,10 +491,4 @@ renderer_capture_write_ppm :: proc(
 		return false
 	}
 	return true
-}
-
-window_resize :: proc(r: ^Renderer, width, height: i32) {
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_window_resize(r, width, height)
-	}
 }

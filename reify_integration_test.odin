@@ -5,13 +5,179 @@ import "core:fmt"
 import "core:image/png"
 import "core:log"
 import "core:mem"
+import "core:os"
 import "core:sync"
 import "core:testing"
 import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
+import "lib/vma"
 
 when bool(#config(Reify_Integration_Test, false)) {
+	@(test)
+	integration_texture_batch_cost :: proc(t: ^testing.T) {
+		f := integration_fixture_make(t)
+		if f == nil do return
+		context = integration_fixture_context(f)
+		assert(integration_renderer_init(f))
+		r := &f.renderer
+		a, a_ok := texture_load(r, f.white[:], 1, 1)
+		b, b_ok := texture_load(r, []Color{{255, 0, 0, 128}}, 1, 1)
+		assert(a_ok && b_ok)
+		set_perf_logging(r, true)
+		modes := [?]bool{false, true}
+		for alternating in modes {
+			build_ms, present_ms: f64
+			draws: int
+			for frame in 0 ..< 10 {
+				start(r, {}, 1)
+				begin_screen_mode(r)
+				build_start := time.now()
+				for i in 0 ..< 10000 {
+					texture := b if alternating && i % 2 != 0 else a
+					draw_image(r, texture, {f32(i % 800), f32(i / 800)}, scale = {1, 1})
+				}
+				build_end := time.now()
+				r.perf.draw_calls = 0
+				r.perf.last_log_time = time.now()
+				assert(present(r))
+				present_end := time.now()
+				assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
+				if frame >= 2 {
+					build_ms += f64(time.duration_milliseconds(time.diff(build_start, build_end)))
+					present_ms += f64(time.duration_milliseconds(time.diff(build_end, present_end)))
+					draws += r.perf.draw_calls
+				}
+			}
+			fmt.printf("Batch cost %s alternating=%v: 10000 sprites, %.0f draws/frame, CPU build %.3fms/frame, present %.3fms/frame (8 samples after warmup)\n", RENDERER_BACKEND, alternating, f64(draws) / 8, build_ms / 8, present_ms / 8)
+		}
+	}
+
+	@(test)
+	integration_backend_parity :: proc(t: ^testing.T) {
+		f := integration_fixture_make(t)
+		if f == nil do return
+		context = integration_fixture_context(f)
+		f.zero_framebuffer = true
+		assert(integration_renderer_init(f))
+		r := &f.renderer
+		caps: vk.SurfaceCapabilitiesKHR
+		assert(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps) == .SUCCESS)
+		if !testing.expect(t, .TRANSFER_SRC in caps.supportedUsageFlags, "Parity readback requires optional surface transfer-source support") do return
+		parity_saved_swapchain = vk.CreateSwapchainKHR
+		vk.CreateSwapchainKHR = integration_parity_swapchain
+		defer vk.CreateSwapchainKHR = parity_saved_swapchain
+		f.zero_framebuffer = false
+		start(r, {}, 1)
+		assert(present(r))
+		defer {
+			assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
+			vma.destroy_buffer(r.gpu.allocator, parity_buffer, parity_allocation)
+			parity_buffer, parity_allocation = {}, nil
+			parity_width, parity_height, parity_mapped = 0, 0, nil
+		}
+		red, red_ok := texture_load(r, []Color{{255, 0, 0, 180}, {0, 0, 255, 255}, {0, 255, 0, 150}, {255, 255, 255, 255}}, 2, 2)
+		green, green_ok := texture_load(r, []Color{{0, 255, 0, 160}}, 1, 1)
+		assert(red_ok && green_ok)
+		font := integration_font_load(f)
+		parity_saved_submit = vk.QueueSubmit
+		vk.QueueSubmit = integration_parity_submit
+		defer vk.QueueSubmit = parity_saved_submit
+		for _ in 0 ..< 6 {
+			start(r, {15, 20}, 1.2)
+			draw_rect(r, {-70, -50}, 100, 80, {240, 80, 120, 190})
+			draw_circle(r, {40, 0}, 30, {30, 220, 160, 170})
+			begin_screen_mode(r)
+			draw_image(r, red, {30, 30}, scale = {90, 90})
+			draw_image(r, green, {110, 50}, scale = {140, 120}, alpha = 0.7)
+			draw_image(r, red, {140, 70}, scale = {70, 70}, rotation = 0.4, uv_rect = {0.5, 0, 0.5, 1}, is_additive = true)
+			draw_triangle(r, {270, 30}, {380, 110}, {250, 150}, {255, 150, 30, 180})
+			draw_line(r, {300, 150}, {440, 40}, 9, {80, 200, 255, 220})
+			points := [][2]f32{{400, 220}, {440, 140}, {500, 200}, {520, 130}}
+			draw_lines(r, 7, {240, 100, 220, 150}, true, true, points)
+			set_scissor(r, 40, 280, 460, 55)
+			draw_text(r, font, "Parity: MSDF / textures", {20, 270}, 42, {220, 240, 255, 200})
+			draw_image(r, green, {420, 260}, scale = {140, 100})
+			clear_scissor(r)
+			end_screen_mode(r)
+			draw_triangle(r, {-20, 80}, {90, 50}, {60, 150}, {255, 160, 90, 200})
+			assert(present(r))
+			assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &parity_command)
+			parity_command = {}
+		}
+		assert(vma.invalidate_allocation(r.gpu.allocator, parity_allocation, 0, vk.DeviceSize(vk.WHOLE_SIZE)) == .SUCCESS)
+		width, height := parity_width, parity_height
+		pixels := ([^]u8)(parity_mapped)[:width * height * 4]
+		nonblack := 0
+		for i in 0 ..< width * height {
+			if pixels[i * 4] != 0 || pixels[i * 4 + 1] != 0 || pixels[i * 4 + 2] != 0 do nonblack += 1
+		}
+		assert(nonblack > 1000)
+		output := os.get_env("REIFY_PARITY_OUTPUT", context.allocator)
+		defer delete(output)
+		if output != "" {
+			assert(renderer_capture_write_ppm(output, pixels, width, height, r.gpu.surface_format.format == .B8G8R8A8_SRGB, false))
+		}
+	}
+
+	parity_saved_swapchain: vk.ProcCreateSwapchainKHR
+	parity_saved_submit: vk.ProcQueueSubmit
+	parity_buffer: vk.Buffer
+	parity_allocation: vma.Allocation
+	parity_command: vk.CommandBuffer
+	parity_width, parity_height: int
+	parity_mapped: rawptr
+
+	integration_parity_swapchain :: proc "system" (device: vk.Device, info: ^vk.SwapchainCreateInfoKHR, allocator: ^vk.AllocationCallbacks, swapchain: ^vk.SwapchainKHR) -> vk.Result {
+		info.imageUsage += {.TRANSFER_SRC}
+		return parity_saved_swapchain(device, info, allocator, swapchain)
+	}
+
+	integration_parity_submit :: proc "system" (queue: vk.Queue, count: u32, submits: [^]vk.SubmitInfo, fence: vk.Fence) -> vk.Result {
+		context = integration_fixture_context(integration_active_fixture)
+		if count != 1 || submits[0].signalSemaphoreCount != 1 do return parity_saved_submit(queue, count, submits, fence)
+		r := &integration_active_fixture.renderer
+		image_index := -1
+		for semaphore, i in r.swapchain.render_semaphores {
+			if semaphore == submits[0].pSignalSemaphores[0] do image_index = i
+		}
+		assert(image_index >= 0 && parity_command == {})
+		extent := r.swapchain.create_info.imageExtent
+		if parity_width != int(extent.width) || parity_height != int(extent.height) {
+			assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
+			if parity_buffer != {} do vma.destroy_buffer(r.gpu.allocator, parity_buffer, parity_allocation)
+			parity_width, parity_height = int(extent.width), int(extent.height)
+			buffer_info := vk.BufferCreateInfo{sType = .BUFFER_CREATE_INFO, size = vk.DeviceSize(parity_width * parity_height * 4), usage = {.TRANSFER_DST}}
+			allocation_info := vma.Allocation_Create_Info{usage = .Auto, flags = {.Host_Access_Random, .Mapped}, required_flags = {.HOST_VISIBLE}}
+			mapped: vma.Allocation_Info
+			assert(vma.create_buffer(r.gpu.allocator, buffer_info, allocation_info, &parity_buffer, &parity_allocation, &mapped) == .SUCCESS)
+			assert(mapped.mapped_data != nil)
+			parity_mapped = mapped.mapped_data
+		}
+		allocation := vk.CommandBufferAllocateInfo{sType = .COMMAND_BUFFER_ALLOCATE_INFO, commandPool = r.command_pool, commandBufferCount = 1}
+		assert(vk.AllocateCommandBuffers(r.gpu.device, &allocation, &parity_command) == .SUCCESS)
+		begin := vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}
+		assert(vk.BeginCommandBuffer(parity_command, &begin) == .SUCCESS)
+		barrier := vk.ImageMemoryBarrier {
+			sType = .IMAGE_MEMORY_BARRIER, srcAccessMask = {.COLOR_ATTACHMENT_WRITE}, dstAccessMask = {.TRANSFER_READ},
+			oldLayout = .PRESENT_SRC_KHR, newLayout = .TRANSFER_SRC_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = r.swapchain.images[image_index], subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+		vk.CmdPipelineBarrier(parity_command, {.COLOR_ATTACHMENT_OUTPUT}, {.TRANSFER}, {}, 0, nil, 0, nil, 1, &barrier)
+		region := vk.BufferImageCopy{imageSubresource = {aspectMask = {.COLOR}, layerCount = 1}, imageExtent = {extent.width, extent.height, 1}}
+		vk.CmdCopyImageToBuffer(parity_command, barrier.image, .TRANSFER_SRC_OPTIMAL, parity_buffer, 1, &region)
+		barrier.srcAccessMask, barrier.dstAccessMask = {.TRANSFER_READ}, {}
+		barrier.oldLayout, barrier.newLayout = .TRANSFER_SRC_OPTIMAL, .PRESENT_SRC_KHR
+		vk.CmdPipelineBarrier(parity_command, {.TRANSFER}, {.BOTTOM_OF_PIPE}, {}, 0, nil, 0, nil, 1, &barrier)
+		assert(vk.EndCommandBuffer(parity_command) == .SUCCESS)
+		commands := [2]vk.CommandBuffer{submits[0].pCommandBuffers[0], parity_command}
+		submit := submits[0]
+		submit.commandBufferCount, submit.pCommandBuffers = 2, &commands[0]
+		return parity_saved_submit(queue, 1, &submit, fence)
+	}
+
 	@(test)
 	integration_renderer_lifetimes :: proc(t: ^testing.T) {
 		f := integration_fixture_make(t)

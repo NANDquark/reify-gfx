@@ -14,7 +14,7 @@ main :: proc() {
 }
 
 run :: proc() -> Error {
-	shader := filepath.join([]string{#directory, "../../assets/quad.spv"}) or_return
+	shader := filepath.join([]string{#directory, "../../assets/quad_vulkan13.spv"}) or_return
 	defer delete(shader)
 	validated, validation_err := run_command(
 		[]string{"spirv-val", "--target-env", "vulkan1.3", shader},
@@ -27,6 +27,21 @@ run :: proc() -> Error {
 	audit_message := audit_assembly(string(assembly))
 	if audit_message != "" do return Tool_Error{audit_message}
 	fmt.println("Vulkan 1.3 shader capability, non-uniform indexing, and layout audit passed")
+	compat_shader := filepath.join(
+		[]string{#directory, "../../assets/quad_vulkan11.spv"},
+	) or_return
+	defer delete(compat_shader)
+	compat_validated, compat_err := run_command(
+		[]string{"spirv-val", "--target-env", "vulkan1.1", compat_shader},
+	)
+	defer delete(compat_validated)
+	if compat_err != nil do return compat_err
+	compat_assembly, compat_dis_err := run_command([]string{"spirv-dis", compat_shader})
+	defer delete(compat_assembly)
+	if compat_dis_err != nil do return compat_dis_err
+	compat_message := audit_assembly(string(compat_assembly), compatibility = true)
+	if compat_message != "" do return Tool_Error{compat_message}
+	fmt.println("Vulkan 1.1 shader capability and standard storage-buffer layout audit passed")
 	return nil
 }
 
@@ -56,7 +71,7 @@ run_command :: proc(command: []string) -> ([]byte, Error) {
 	return stdout, nil
 }
 
-audit_assembly :: proc(assembly: string) -> string {
+audit_assembly :: proc(assembly: string, compatibility := false) -> string {
 	instructions: [dynamic][]string
 	defer {
 		for fields in instructions do delete(fields)
@@ -78,7 +93,51 @@ audit_assembly :: proc(assembly: string) -> string {
 			return "shader instruction table allocation failed"
 		}
 	}
+	if compatibility do return audit_compatibility(instructions[:])
 	return audit_instructions(instructions[:])
+}
+
+audit_compatibility :: proc(instructions: [][]string) -> string {
+	shader := false
+	for fields in instructions {
+		if fields[0] == "OpCapability" {
+			if len(fields) != 2 || fields[1] != "Shader" {
+				return "Vulkan 1.1 shader requires an optional capability"
+			}
+			shader = true
+		}
+		if fields[0] == "OpExtension" do return "Vulkan 1.1 shader requires a SPIR-V extension"
+	}
+	if !shader do return "Vulkan 1.1 shader has no Shader capability"
+	layouts := [?]string {
+		"OpMemoryModel Logical GLSL450",
+		"OpDecorate %instances Binding 0",
+		"OpDecorate %instances DescriptorSet 0",
+		"OpDecorate %fonts Binding 1",
+		"OpDecorate %fonts DescriptorSet 0",
+		"OpDecorate %texture Binding 0",
+		"OpDecorate %texture DescriptorSet 1",
+		"OpMemberDecorate %Push_Constants_std430 0 Offset 0",
+		"OpMemberDecorate %Push_Constants_std430 0 MatrixStride 16",
+		"OpDecorate %_runtimearr_Instance_std430 ArrayStride 64",
+		"OpDecorate %_runtimearr_Font_std430 ArrayStride 16",
+		"OpMemberDecorate %Font_std430 0 Offset 0",
+		"OpMemberDecorate %Font_std430 1 Offset 4",
+		"OpMemberDecorate %Font_std430 2 Offset 8",
+	}
+	for layout in layouts {
+		if !has_instruction(instructions, layout) do return fmt.tprintf("Vulkan 1.1 layout mismatch: %s", layout)
+	}
+	offsets := [?]int{0, 8, 16, 20, 24, 28, 32, 48}
+	for offset, member in offsets {
+		if !has_instruction(
+			instructions,
+			fmt.tprintf("OpMemberDecorate %%Instance_std430 %d Offset %d", member, offset),
+		) {
+			return "Vulkan 1.1 instance member layout differs from Quad_Instance"
+		}
+	}
+	return ""
 }
 
 audit_instructions :: proc(instructions: [][]string) -> string {

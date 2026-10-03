@@ -7,6 +7,70 @@ import "core:reflect"
 import "lib/vma"
 import vk "vendor:vulkan"
 
+// Translate a Vulkan result into the backend-independent renderer result.
+vk_result :: proc(res: vk.Result) -> Renderer_Result {
+	#partial switch res {
+	case .SUCCESS: return .Success
+	case .ERROR_OUT_OF_HOST_MEMORY: return .Out_Of_Host_Memory
+	case .ERROR_OUT_OF_DEVICE_MEMORY: return .Out_Of_Device_Memory
+	case .ERROR_DEVICE_LOST: return .Device_Lost
+	case .ERROR_SURFACE_LOST_KHR: return .Surface_Lost
+	case .ERROR_INITIALIZATION_FAILED: return .Initialization_Failed
+	case: return .Unknown
+	}
+}
+
+// Bounded retries handle a changing enumeration without using unwritten entries.
+vk_enumerate :: proc(
+	$T: typeid,
+	instance: vk.Instance = {},
+	physical: vk.PhysicalDevice = {},
+	surface: vk.SurfaceKHR = {},
+	device: vk.Device = {},
+	swapchain: vk.SwapchainKHR = {},
+) -> ([]T, vk.Result) {
+	for _ in 0 ..< 4 {
+		count: u32
+		res := vk_enumerate_query(T, instance, physical, surface, device, swapchain, &count, nil)
+		if res != .SUCCESS && res != .INCOMPLETE do return nil, res
+		if count == 0 do return nil, .SUCCESS
+		items, allocation_error := make([]T, count, context.temp_allocator)
+		if allocation_error != nil do return nil, .ERROR_OUT_OF_HOST_MEMORY
+		res = vk_enumerate_query(T, instance, physical, surface, device, swapchain, &count, raw_data(items))
+		if res == .SUCCESS do return items[:count], res
+		delete(items, context.temp_allocator)
+		if res != .INCOMPLETE do return nil, res
+	}
+	return nil, .INCOMPLETE
+}
+
+vk_enumerate_query :: proc(
+	$T: typeid,
+	instance: vk.Instance,
+	physical: vk.PhysicalDevice,
+	surface: vk.SurfaceKHR,
+	device: vk.Device,
+	swapchain: vk.SwapchainKHR,
+	count: ^u32,
+	items: [^]T,
+) -> vk.Result {
+	when T == vk.ExtensionProperties {
+		if physical != {} do return vk.EnumerateDeviceExtensionProperties(physical, nil, count, items)
+		return vk.EnumerateInstanceExtensionProperties(nil, count, items)
+	} else when T == vk.LayerProperties {
+		return vk.EnumerateInstanceLayerProperties(count, items)
+	} else when T == vk.PhysicalDevice {
+		return vk.EnumeratePhysicalDevices(instance, count, items)
+	} else when T == vk.SurfaceFormatKHR {
+		return vk.GetPhysicalDeviceSurfaceFormatsKHR(physical, surface, count, items)
+	} else when T == vk.PresentModeKHR {
+		return vk.GetPhysicalDeviceSurfacePresentModesKHR(physical, surface, count, items)
+	} else when T == vk.Image {
+		return vk.GetSwapchainImagesKHR(device, swapchain, count, items)
+	}
+	return .ERROR_INITIALIZATION_FAILED
+}
+
 // Assert that the vulkan result is success
 vk_assert :: proc(res: vk.Result, loc := #caller_location) {
 	if res != .SUCCESS {
@@ -413,4 +477,12 @@ vk_create_texture :: proc(
 	}
 	success = true
 	return tex, .SUCCESS
+}
+
+Texture :: struct {
+	alloc:  vma.Allocation,
+	image:  vk.Image,
+	view:   vk.ImageView,
+	width:  int,
+	height: int,
 }
