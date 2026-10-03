@@ -84,7 +84,7 @@ Renderer_Init_Info
     allocator / temporary allocator options
     config: renderer configuration (runtime backend preference added in stage 4)
 
-init(renderer, info) -> initialization error or success
+init(renderer, info) -> bool (failure details are logged)
 ```
 
 Validate the Vulkan callback contract instead of using a platform-name enum or
@@ -167,13 +167,13 @@ and reinitialization initially; surface-loss errors should be reported clearly.
 
 ## Errors and adapter examples
 
-Return a Reify-owned initialization error with a stage/category and diagnostic
-message; retain the underlying Vulkan result or SDL message where applicable.
+Return `false` on initialization failure and log the stage/category, diagnostic
+message, and underlying Vulkan result or SDL message where applicable.
 Distinguish missing platform capability, missing extension, surface creation,
 no suitable present-capable device, and GPU-resource initialization failures.
 Copy diagnostic text when the provider's error string is temporary.
 
-Missing surface callbacks should produce a useful error rather than a Substrate
+Missing surface callbacks should produce a useful log diagnostic rather than a Substrate
 compile-time assertion. Reject the retired `sdlgpu` selection with a migration
 message pointing to currently implemented choices (`vulkan13` at this stage;
 `auto` and `vulkan11` become available in later stages).

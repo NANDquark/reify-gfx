@@ -33,7 +33,8 @@ Small follow-up to [01-platform.md](01-platform.md), before stage 2.
    layer lists and the generic requested-layer loop with one fixed array and an
    enabled count. Check enumeration results and retain the missing-layer warning.
 
-Keep surface callbacks, ownership, `init(renderer, info)`, structured errors, and
+Keep surface callbacks, ownership, `init(renderer, info)`, boolean results with
+logged diagnostics, and
 backend `when` dispatch unchanged. Coordinate layer handling with stage 2.
 
 ## Validation

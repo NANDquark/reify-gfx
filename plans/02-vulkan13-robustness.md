@@ -2,7 +2,11 @@
 
 ## Status
 
-`todo` — Implementation has not started.
+`completed` — Implementation, available NVIDIA validation, and adversarial review
+are complete. At the user's direction, remaining hardware/platform coverage is
+carried forward as follow-up testing in README's Expected Compatibility section,
+not a blocker for this stage. This is not a claim of universal Vulkan 1.3
+compatibility or completed AMD/Intel, older-driver, or Windows validation.
 
 Implementation stage 2, after [01-platform.md](01-platform.md).
 See [00-roadmap.md](00-roadmap.md) for shared decisions and gates.
@@ -12,14 +16,14 @@ See [00-roadmap.md](00-roadmap.md) for shared decisions and gates.
 Harden the existing `vulkan13` renderer so it selects suitable hardware, validates
 its complete requirements, respects memory/resource limits, and reports failures
 without leaving partially initialized state. Preserve its buffer-device-address,
-bindless-texture, dynamic-rendering design. This is an implementation plan, not an
-implemented change or a claim that all Vulkan 1.3 devices support this renderer.
+bindless-texture, dynamic-rendering design. This plan records the completed stage;
+it does not claim that all Vulkan 1.3 devices support this renderer.
 
 Coordinate surface-dependent initialization with [01-platform.md](01-platform.md).
 An unsupported device can receive a diagnostic suggesting the separately selected
 backend in [03-vulkan11-compatibility.md](03-vulkan11-compatibility.md); do not silently switch backends.
 
-## Findings in the current implementation
+## Findings motivating this stage
 
 - `vk_select_phys_device` ranks devices without first validating the required API,
   feature bits, descriptor limits, formats, queues, or presentation support.
@@ -196,12 +200,13 @@ enumeration or noisy logging each frame.
 
 ## 6. Failure reporting and lifecycle
 
-Extend the platform stage's common error types for loader/extension/feature
+Keep internal failure details for loader/extension/feature
 incompatibility, insufficient limits, invalid input, capacity exhaustion,
 allocation failure, surface loss,
-and device loss. Reserve assertions for internal invariants. Propagate failures
-through `init`, resource loading, and presentation instead of logging and
-continuing with invalid state; coordinate public error types with `01-platform.md`.
+and device loss. Reserve assertions for internal invariants. Public `init` and
+presentation return `bool`; resource loading returns `(handle, bool)`. Log failure
+details through `context.logger` and return `false` instead of continuing with
+invalid state. Preserve cleanup and candidate-retry decisions internally.
 
 Report GPU name, vendor/device IDs, driver identity/version, API version, enabled
 optional capabilities, selected queues, effective capacities, and memory summary.
@@ -244,6 +249,40 @@ hardware is selected even when another GPU is incompatible, normal resource
 failures leave the renderer consistent, and representative rendering remains
 visually equivalent without validation errors. Keep broader rendering fallbacks
 in the separate compatibility backend.
+
+## Implementation and validation record
+
+- Requirement queries, pre-ranking capability filtering, candidate retries,
+  ordinary descriptor-limit negotiation, fallback descriptors, and surface
+  negotiation are implemented in the existing Vulkan 1.3 slice.
+- The SPIR-V contract audit requires `shaderDrawParameters`: the rebuilt shader
+  still declares `DrawParameters`. Anisotropy and variable descriptor count are
+  not requested. Only supported sRGB/nonlinear surface formats are accepted.
+- Checked loading APIs, capacity/memory diagnostics, transactional publication,
+  host-visible mapping, checked flushes, bounded 4 MiB-to-64 KiB staging retries,
+  tiled uploads, and shared-resource waits are implemented. Failed completion
+  waits retain pending resources until `destroy` can safely clean up.
+- Public operations return boolean success with logged diagnostics; detailed
+  failure records stay internal. Rejected frames keep only a validity flag and
+  log their cause once, without stopping the renderer for invalid drawing input.
+- CPU fixtures cover features/limits, heap accounting, input bounds, descriptor
+  capacity, separate queue selection, changing enumeration, incompatible-first
+  candidate filtering, candidate activation retry, and initialization unwind.
+- Available hardware: NVIDIA GeForce GTX 1070, driver 580.178.04, Vulkan 1.4.312.
+  Thirteen package tests and core/demo/SDL compile checks pass. The real-device
+  robustness runner passes core, synchronization, and GPU-assisted validation
+  (GPU-AV reports expected instrumentation/unsupported ray/mesh setting warnings).
+  Tests cover mixed textures/MSDF, 64 KiB fallback/chunked uploads, pending-reader
+  mutations, full instance/texture/font capacities, allocation/map/image/view/
+  upload/submission failure rollback, failed upload/cleanup waits, and allocator
+  leak tracking. The generated shader passes Vulkan 1.3 SPIR-V validation and
+  capability/non-uniform-decoration/layout auditing. The bundled VMA header's
+  64-bit ABI was checked against the Odin bindings.
+  The GLFW lifecycle smoke also passes synchronization validation, including
+  resize/minimize, vsync changes, and repeated initialization/destruction.
+- Not verified: AMD/Intel hardware, actual separate graphics/present queues,
+  non-coherent memory, older drivers, Windows execution, and a comprehensive
+  visual-equivalence comparison. Fixtures do not substitute for these runs.
 
 ## Further references
 

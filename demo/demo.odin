@@ -13,8 +13,6 @@ import "core:time"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-DEMO_SMOKE_TEST :: bool(#config(Demo_Smoke_Test, false))
-
 WIDTH :: 800
 HEIGHT :: 600
 
@@ -45,7 +43,7 @@ main :: proc() {
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
 	window_width, window_height := glfw.GetWindowSize(window)
-	err := re.init(
+	ok := re.init(
 		&renderer,
 		{
 			platform = glfw_platform(window),
@@ -53,15 +51,15 @@ main :: proc() {
 			config = {vsync = true},
 		},
 	)
-	if err.category != .None do panic(re.error_message(&err))
+	if !ok do return
 	defer re.destroy(&renderer)
-	when DEMO_SMOKE_TEST {demo_smoke(window); return}
 
 	// ASSET LOADING
 	tree_img := load_tile_img()
 	defer image.destroy(tree_img)
 	tree_pixels := slice.reinterpret([]re.Color, tree_img.pixels.buf[:])
 	tree_tex, tree_ok := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
+	if !tree_ok do return
 
 	tilemap_img := load_tilemap()
 	defer image.destroy(tilemap_img)
@@ -72,6 +70,7 @@ main :: proc() {
 		tilemap_img.width,
 		tilemap_img.height,
 	)
+	if !tilemap_ok do return
 	mushroom_uv_rect := re.Rect {
 		x = f32(85) / f32(tilemap_img.width),
 		y = f32(34) / f32(tilemap_img.height),
@@ -79,11 +78,8 @@ main :: proc() {
 		h = f32(16) / f32(tilemap_img.height),
 	}
 
-	assert(tree_ok && tilemap_ok)
 	font, font_ok := re.font_load(&renderer, FONT_ATLAS_JSON_BYTES, FONT_ATLAS_IMG_BYTES)
-	if !font_ok {
-		panic("failed to load font")
-	}
+	if !font_ok do return
 
 	// MAIN LOOP
 	cam_pos := [2]f32{100, 100}
@@ -139,79 +135,9 @@ main :: proc() {
 		)
 		re.end_screen_mode(&renderer)
 
-		if err := re.present(&renderer); err.category != .None do panic(re.error_message(&err))
+		if !re.present(&renderer) do return
 		free_all(context.temp_allocator)
 	}
-}
-
-smoke_zero_framebuffer: bool
-
-// Exercise presentation transitions and repeated resource/device lifetimes.
-demo_smoke :: proc(window: glfw.WindowHandle) {
-	for cycle in 0 ..< 3 {
-		if cycle > 0 {
-			err := re.init(
-				&renderer,
-				{
-					platform = glfw_platform(window),
-					logical_size = {800, 600},
-					config = {vsync = true},
-				},
-			)
-			if err.category != .None do panic(re.error_message(&err))
-		}
-		assert(len(renderer.platform.vulkan.required_instance_extensions) == 0)
-		font, ok := re.font_load(&renderer, FONT_ATLAS_JSON_BYTES, FONT_ATLAS_IMG_BYTES)
-		assert(ok)
-		for frame in 0 ..< 48 {
-			glfw.PollEvents()
-			switch frame {
-			case 8:
-				glfw.SetWindowSize(window, 960, 720)
-			case 16:
-				re.set_vsync(&renderer, false)
-			case 24:
-				glfw.IconifyWindow(window); smoke_zero_framebuffer = true
-			case 32:
-				glfw.RestoreWindow(window); smoke_zero_framebuffer = false
-			case 40:
-				re.set_vsync(&renderer, true)
-			}
-			re.start(&renderer, {0, 0}, 1)
-			re.begin_screen_mode(&renderer)
-			re.set_scissor(&renderer, -10, 10, 300, 200)
-			re.draw_rect(&renderer, {0, 0}, 400, 400, {50, 100, 200, 255})
-			re.clear_scissor(&renderer)
-			re.draw_text(
-				&renderer,
-				font,
-				"Reify platform smoke",
-				{40, 40},
-				24,
-				{255, 255, 255, 255},
-			)
-			re.end_screen_mode(&renderer)
-			if err := re.present(&renderer); err.category != .None do panic(re.error_message(&err))
-			time.sleep(10 * time.Millisecond)
-			free_all(context.temp_allocator)
-		}
-		re.destroy(&renderer)
-	}
-	// Initialize with zero pixels; resource loading remains available before restore.
-	smoke_zero_framebuffer = true
-	err := re.init(
-		&renderer,
-		{platform = glfw_platform(window), logical_size = {800, 600}, config = {vsync = true}},
-	)
-	if err.category != .None do panic(re.error_message(&err))
-	_, ok := re.texture_load(&renderer, []re.Color{{255, 255, 255, 255}}, 1, 1)
-	assert(ok)
-	re.start(&renderer, {0, 0}, 1)
-	if err := re.present(&renderer); err.category != .None do panic(re.error_message(&err))
-	smoke_zero_framebuffer = false
-	re.start(&renderer, {0, 0}, 1)
-	re.draw_rect(&renderer, {0, 0}, 40, 40, {255, 255, 255, 255})
-	if err := re.present(&renderer); err.category != .None do panic(re.error_message(&err))
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
@@ -245,7 +171,9 @@ load_tilemap :: proc() -> ^image.Image {
 // GLFW owns the window and runtime; Reify invokes these callbacks synchronously.
 glfw_platform :: proc(window: glfw.WindowHandle) -> re.Platform_Interface {
 	extensions := glfw.GetRequiredInstanceExtensions()
-	if len(extensions) == 0 do panic("GLFW Vulkan instance extensions unavailable")
+	if len(extensions) == 0 {
+		panic(("GLFW Vulkan instance extensions unavailable"))
+	}
 	return {
 		user_data = rawptr(window),
 		get_framebuffer_size = glfw_framebuffer_size,
@@ -258,7 +186,6 @@ glfw_platform :: proc(window: glfw.WindowHandle) -> re.Platform_Interface {
 }
 
 glfw_framebuffer_size :: proc(data: rawptr) -> ([2]int, re.Platform_Error) {
-	when DEMO_SMOKE_TEST {if smoke_zero_framebuffer do return {}, {}}
 	w, h := glfw.GetFramebufferSize(cast(glfw.WindowHandle)data)
 	return {int(w), int(h)}, {}
 }
@@ -272,7 +199,9 @@ glfw_surface_create :: proc(
 ) {
 	surface: vk.SurfaceKHR
 	result := glfw.CreateWindowSurface(instance, cast(glfw.WindowHandle)data, nil, &surface)
-	if result != .SUCCESS do return {}, {message = "GLFW surface creation failed", result = result}
+	if result != .SUCCESS {
+		return {}, {message = "GLFW surface creation failed", result = result}
+	}
 	return surface, {}
 }
 

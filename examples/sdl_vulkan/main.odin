@@ -2,6 +2,7 @@ package sdl_vulkan
 
 import re "../.."
 import "core:c"
+import "core:log"
 import "core:time"
 import sdl "vendor:sdl3"
 import vk "vendor:vulkan"
@@ -10,6 +11,7 @@ EXAMPLE_SMOKE_TEST :: bool(#config(Example_Smoke_Test, false))
 smoke_zero_framebuffer: bool
 
 main :: proc() {
+	context.logger = log.create_console_logger()
 	if !sdl.Init({.VIDEO}) do panic(string(sdl.GetError()))
 	defer sdl.Quit()
 	window := sdl.CreateWindow(
@@ -22,11 +24,11 @@ main :: proc() {
 	defer sdl.DestroyWindow(window)
 	r := new(re.Renderer)
 	defer free(r)
-	err := re.init(
+	ok := re.init(
 		r,
 		{platform = sdl_platform(window), logical_size = {800, 600}, config = {vsync = true}},
 	)
-	if err.category != .None do panic(re.error_message(&err))
+	if !ok do return
 	when EXAMPLE_SMOKE_TEST {assert(len(r.platform.vulkan.required_instance_extensions) == 0)}
 	defer re.destroy(r)
 	frame_limit :: int(#config(Example_Frames, 0))
@@ -60,7 +62,7 @@ main :: proc() {
 		re.begin_screen_mode(r)
 		re.draw_rect(r, {40, 40}, 120, 80, {80, 180, 255, 255})
 		re.end_screen_mode(r)
-		if err := re.present(r); err.category != .None do panic(re.error_message(&err))
+		if !re.present(r) do return
 		frames += 1
 		if frame_limit > 0 && frames >= frame_limit do break
 		time.sleep(10 * time.Millisecond)
@@ -86,7 +88,9 @@ sdl_platform :: proc(window: ^sdl.Window) -> re.Platform_Interface {
 sdl_framebuffer_size :: proc(data: rawptr) -> ([2]int, re.Platform_Error) {
 	when EXAMPLE_SMOKE_TEST {if smoke_zero_framebuffer do return {}, {}}
 	w, h: c.int
-	if !sdl.GetWindowSizeInPixels(cast(^sdl.Window)data, &w, &h) do return {}, {message = string(sdl.GetError())}
+	if !sdl.GetWindowSizeInPixels(cast(^sdl.Window)data, &w, &h) {
+		return {}, {message = string(sdl.GetError())}
+	}
 	return {int(w), int(h)}, {}
 }
 
@@ -98,7 +102,9 @@ sdl_surface_create :: proc(
 	re.Platform_Error,
 ) {
 	surface: vk.SurfaceKHR
-	if !sdl.Vulkan_CreateSurface(cast(^sdl.Window)data, instance, nil, &surface) do return {}, {message = string(sdl.GetError())}
+	if !sdl.Vulkan_CreateSurface(cast(^sdl.Window)data, instance, nil, &surface) {
+		return {}, {message = string(sdl.GetError())}
+	}
 	return surface, {}
 }
 

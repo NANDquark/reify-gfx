@@ -47,6 +47,8 @@ try {
 		throw "slangc shader compilation failed."
 	}
 
+	& odin run "..\tools\validate_quad_shader"
+	if ($LASTEXITCODE -ne 0) { throw "SPIR-V validation failed." }
 	& odin run "..\tools\shader_types_gen"
 	if ($LASTEXITCODE -ne 0) {
 		throw "odin run ..\\tools\\shader_types_gen failed."

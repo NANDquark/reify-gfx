@@ -90,14 +90,16 @@ instance, surface, compatible physical device/queues, then device/resources.
 Do not add a public `set_surface` step or revive manual loader initialization.
 The implemented stage-1 descriptor is `Renderer_Init_Info` with `platform`,
 `logical_size`, allocator options, and `config.vsync`. Both `init` and `present`
-return `Renderer_Error`; reuse its stage/category/result and copied diagnostics.
+return `bool`; log detailed failure diagnostics through `context.logger`.
+Resource loading returns `(handle, bool)`, without caller-facing error records.
 Resource loading is valid after successful initialization, including when a
 minimized window has deferred swapchain creation.
 
 On failure, report the selected backend and concrete missing capability, clean
-up partial state, and return a structured initialization failure. The selection
+up partial state, and return `false`. The selection
 manager may try another candidate in Auto mode; explicit selection must not
-silently switch backends. Coordinate the error API with the platform plan.
+silently switch backends. Keep retry decisions internal and preserve the public
+boolean/logging contract from the platform plan.
 
 ## Shader and resource layout
 

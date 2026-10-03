@@ -1,6 +1,7 @@
 package reify
 
 import "core:mem"
+import "core:log"
 import vk "vendor:vulkan"
 
 // Callbacks use the calling thread's Odin context and must not reenter the renderer.
@@ -49,6 +50,35 @@ Renderer_Config :: struct {
 	vsync: bool,
 }
 
+Negotiated_Limits :: struct {
+	textures, fonts, instances: u32,
+	max_image_dimension:        u32,
+	staging_bytes:              u32,
+}
+
+effective_limits :: proc(r: ^Renderer) -> Negotiated_Limits {
+	if r == nil || !r.initialized do return {}
+	return r.gpu.limits
+}
+
+Memory_Heap_Summary :: struct {
+	size, budget, usage, estimated_headroom, allocator_bytes: u64,
+	device_local, host_visible, budget_known:                 bool,
+}
+
+Memory_Summary :: struct {
+	heaps:      [vk.MAX_MEMORY_HEAPS]Memory_Heap_Summary,
+	heap_count: u32,
+}
+
+// Budget telemetry is advisory; allocator_bytes includes allocator block overhead.
+memory_summary :: proc(r: ^Renderer) -> Memory_Summary {
+	if r == nil || !r.initialized do return {}
+	vulkan13_refresh_memory(&r.gpu)
+	return vulkan13_memory_summary(&r.gpu)
+}
+
+@(private)
 Renderer_Error_Stage :: enum {
 	None,
 	Platform,
@@ -59,6 +89,7 @@ Renderer_Error_Stage :: enum {
 	Resources,
 	Presentation,
 }
+@(private)
 Renderer_Error_Category :: enum {
 	None,
 	Invalid_State,
@@ -68,19 +99,46 @@ Renderer_Error_Category :: enum {
 	Vulkan_Failure,
 	No_Present_Device,
 	Surface_Lost,
+	Unsupported_API,
+	Missing_Feature,
+	Insufficient_Limits,
+	Invalid_Input,
+	Capacity_Exhausted,
+	Allocation_Failure,
+	Device_Lost,
+}
+@(private)
+Renderer_Result :: enum i32 {
+	None,
+	Success,
+	Out_Of_Host_Memory,
+	Out_Of_Device_Memory,
+	Device_Lost,
+	Surface_Lost,
+	Initialization_Failed,
+	Unknown,
 }
 
-// Diagnostics are copied into the value and require no separate allocation/free.
+// Internal diagnostics are copied into the value and require no separate allocation/free.
+@(private)
 Renderer_Error :: struct {
 	stage:             Renderer_Error_Stage,
 	category:          Renderer_Error_Category,
-	result:            vk.Result,
+	result:            Renderer_Result,
 	diagnostic:        [512]u8,
 	diagnostic_length: int,
 }
 
+@(private)
 error_message :: proc(err: ^Renderer_Error) -> string {
 	return string(err.diagnostic[:err.diagnostic_length])
+}
+
+@(private)
+renderer_log_error :: proc(err: Renderer_Error) {
+	if err.category == .None do return
+	err := err
+	log.errorf("reify %v: %v (%v, %v)", err.stage, error_message(&err), err.category, err.result)
 }
 
 @(private)
@@ -88,8 +146,19 @@ renderer_error :: proc(
 	stage: Renderer_Error_Stage,
 	category: Renderer_Error_Category,
 	message: string,
-	result: vk.Result = .SUCCESS,
+	result: Renderer_Result = .None,
 ) -> Renderer_Error {
+	category := category
+	if category == .Vulkan_Failure {
+		#partial switch result {
+		case .Out_Of_Host_Memory, .Out_Of_Device_Memory:
+			category = .Allocation_Failure
+		case .Device_Lost:
+			category = .Device_Lost
+		case .Surface_Lost:
+			category = .Surface_Lost
+		}
+	}
 	err := Renderer_Error {
 		stage    = stage,
 		category = category,

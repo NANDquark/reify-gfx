@@ -13,35 +13,19 @@ when RENDERER_BACKEND != "vulkan13" {
 	#panic("unsupported Renderer_Backend: use `vulkan13`")
 }
 
-Renderer_Perf_Stats :: struct {
-	enabled:       bool,
-	last_log_time: time.Time,
-	frames:        int,
-	draw_images:   int,
-	draw_rects:    int,
-	draw_lines:    int,
-	draw_linesets: int,
-	draw_texts:    int,
-	vertices:      int,
-	draw_calls:    int,
-	acquire_ms:    f64,
-	build_ms:      f64,
-	upload_ms:     f64,
-	render_ms:     f64,
-	submit_ms:     f64,
-	present_ms:    f64,
-	fps_last_log:  time.Time,
-	fps_frames:    int,
-	fps_value:     f32,
-}
-
 renderer_backend :: proc() -> string {
 	return RENDERER_BACKEND
 }
 
-init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error {
+@(require_results)
+init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> bool {
 	when RENDERER_BACKEND == "vulkan13" {
-		return vulkan13_init(r, info)
+		err := vulkan13_init(r, info)
+		if err.category != .None {
+			renderer_log_error(err)
+			return false
+		}
+		return true
 	}
 }
 
@@ -57,15 +41,28 @@ set_perf_logging :: proc(r: ^Renderer, enabled: bool) {
 	}
 }
 
+@(require_results)
 font_load :: proc(r: ^Renderer, font_json: []byte, font_msdf: []byte) -> (Font_Face_Handle, bool) {
+	if r == nil || !r.initialized {
+		log.error("reify font_load: renderer is not initialized")
+		return {idx = -1}, false
+	}
+
 	when RENDERER_BACKEND == "vulkan13" {
 		font, err := vulkan13_font_load(r, font_json, font_msdf)
 		if err != nil {
-			log.errorf("vulkan13 font_load failed: %v", err)
-			return {}, false
+			gpu_err, ok := err.(Renderer_Error)
+			if ok {
+				renderer_log_error(gpu_err)
+			} else {
+				log.errorf("reify font_load: %v", err)
+			}
+			return {idx = -1}, false
 		}
 		return font, true
 	}
+
+	return {}, false
 }
 
 start :: proc(r: ^Renderer, cam_pos: [2]f32, cam_zoom: f32) {
@@ -92,11 +89,19 @@ draw_fps :: proc(r: ^Renderer, font: Font_Face_Handle, pos: [2]f32, size: int) {
 	}
 }
 
-present :: proc(r: ^Renderer) -> Renderer_Error {
+@(require_results)
+present :: proc(r: ^Renderer) -> bool {
 	when RENDERER_BACKEND == "vulkan13" {
+		if r != nil && r.initialized && r.frame_failed && !r.stopped {
+			r.frame_started = false
+			return false
+		}
 		present_start := time.now()
 		err := vulkan13_present(r, {0, 0, 0, 255})
-		if err.category != .None do return err
+		if err.category != .None {
+			renderer_log_error(err)
+			return false
+		}
 		present_end := time.now()
 
 		r.perf.fps_frames += 1
@@ -114,7 +119,7 @@ present :: proc(r: ^Renderer) -> Renderer_Error {
 		}
 
 		if !r.perf.enabled {
-			return {}
+			return true
 		}
 
 		r.perf.frames += 1
@@ -144,11 +149,14 @@ present :: proc(r: ^Renderer) -> Renderer_Error {
 			r.perf.present_ms = 0
 		}
 
-		return {}
+		return true
 	}
 }
 
 destroy :: proc(r: ^Renderer) {
+	if r == nil do return
+	r.stopped = true
+
 	when RENDERER_BACKEND == "vulkan13" {
 		vulkan13_destroy(r)
 	}
@@ -284,22 +292,59 @@ draw_image :: proc(
 	}
 }
 
+@(require_results)
 texture_load :: proc(r: ^Renderer, pixels: []Color, width, height: int) -> (Texture_Handle, bool) {
-	when RENDERER_BACKEND == "vulkan13" {
-		return vulkan13_texture_load(r, pixels, width, height), true
+	if r == nil || !r.initialized {
+		log.error("reify texture_load: renderer is not initialized")
+		return {idx = -1}, false
 	}
+
+	when RENDERER_BACKEND == "vulkan13" {
+		handle, err := vulkan13_texture_load(r, pixels, width, height)
+		if err.category != .None {
+			renderer_log_error(err)
+			return handle, false
+		}
+		return handle, true
+	}
+
+	return {}, false
 }
 
 texture_get_metrics :: proc(r: ^Renderer, handle: Texture_Handle) -> (Texture_Metrics, bool) {
+	if r == nil || !r.initialized do return {}, false
 	when RENDERER_BACKEND == "vulkan13" {
 		return vulkan13_texture_get_metrics(r, handle)
 	}
+}
+
+Renderer_Perf_Stats :: struct {
+	enabled:       bool,
+	last_log_time: time.Time,
+	frames:        int,
+	draw_images:   int,
+	draw_rects:    int,
+	draw_lines:    int,
+	draw_linesets: int,
+	draw_texts:    int,
+	vertices:      int,
+	draw_calls:    int,
+	acquire_ms:    f64,
+	build_ms:      f64,
+	upload_ms:     f64,
+	render_ms:     f64,
+	submit_ms:     f64,
+	present_ms:    f64,
+	fps_last_log:  time.Time,
+	fps_frames:    int,
+	fps_value:     f32,
 }
 
 vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
 	if r == nil {
 		return false
 	}
+	if .TRANSFER_SRC not_in r.swapchain.create_info.imageUsage do return false
 	image_count := len(r.swapchain.images)
 	if image_count <= 0 {
 		log.error("vulkan13 debug capture failed: no swapchain images")

@@ -39,4 +39,3 @@ Quad_Instance_Type :: enum u8 {
 	Triangle = 3,
 	MSDF = 4,
 }
-

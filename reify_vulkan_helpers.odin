@@ -1,10 +1,8 @@
 #+private
 package reify
 
-import "base:runtime"
 import "core:fmt"
 import "core:math/linalg"
-import "core:mem"
 import "core:reflect"
 import "lib/vma"
 import vk "vendor:vulkan"
@@ -28,77 +26,6 @@ vk_chk_swapchain :: proc(result: vk.Result, loc := #caller_location) -> Chk_Swap
 	panic(fmt.tprintf("vk_chk_swapchain failed: %v, loc=%v,%v\n", result, loc.file_path, loc.line))
 }
 
-// Iterate the physical graphics devices and select the best one for usage
-vk_select_phys_device :: proc(phys_devices: []vk.PhysicalDevice) -> vk.PhysicalDevice {
-	best: vk.PhysicalDevice
-	best_score := min(int)
-	for pd in phys_devices {
-		d_score := vk_rate_phys_device(pd)
-		if d_score > best_score {
-			best = pd
-			best_score = d_score
-		}
-	}
-	return best
-}
-
-// Create a rating for each physical device based on integrated vs discrete,
-// available VRAM, and other GPU limits. Higher ratings are better.
-vk_rate_phys_device :: proc(phys_device: vk.PhysicalDevice) -> int {
-	props: vk.PhysicalDeviceProperties
-	vk.GetPhysicalDeviceProperties(phys_device, &props)
-
-	score := 0
-	if props.deviceType == .DISCRETE_GPU {
-		score += 1000
-	}
-	score += int(props.limits.maxImageDimension2D)
-
-	// account for available vram
-	if vk_check_ext_supported(
-		phys_device,
-		vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
-	) {
-		budget_props := vk.PhysicalDeviceMemoryBudgetPropertiesEXT {
-			sType = .PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
-		}
-		mem_props := vk.PhysicalDeviceMemoryProperties2 {
-			sType = .PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
-			pNext = &budget_props,
-		}
-		vk.GetPhysicalDeviceMemoryProperties2(phys_device, &mem_props)
-
-		available_budget_gb := 0
-		for i in 0 ..< mem_props.memoryProperties.memoryHeapCount {
-			heap := mem_props.memoryProperties.memoryHeaps[i]
-			if .DEVICE_LOCAL in heap.flags {
-				available_budget_gb += int(budget_props.heapBudget[i]) / mem.Gigabyte
-			}
-		}
-		score += available_budget_gb * 100
-	}
-
-	return score
-}
-
-// Check whether a physical device supports a target extension
-vk_check_ext_supported :: proc(phys_device: vk.PhysicalDevice, target_ext_name: cstring) -> bool {
-	ext_count: u32
-	vk.EnumerateDeviceExtensionProperties(phys_device, nil, &ext_count, nil)
-	available_ext := make([]vk.ExtensionProperties, ext_count)
-	defer delete(available_ext)
-	vk.EnumerateDeviceExtensionProperties(phys_device, nil, &ext_count, raw_data(available_ext[:]))
-
-	for &ext in available_ext {
-		ext_name := cstring(&ext.extensionName[0])
-		if runtime.cstring_cmp(target_ext_name, ext_name) == 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
 One_Time_Cmd_Buffer :: struct {
 	device:       vk.Device,
 	queue:        vk.Queue,
@@ -111,7 +38,10 @@ vk_one_time_cmd_buffer_begin :: proc(
 	device: vk.Device,
 	queue: vk.Queue,
 	command_pool: vk.CommandPool,
-) -> One_Time_Cmd_Buffer {
+) -> (
+	One_Time_Cmd_Buffer,
+	vk.Result,
+) {
 	ctx := One_Time_Cmd_Buffer {
 		device       = device,
 		queue        = queue,
@@ -121,37 +51,49 @@ vk_one_time_cmd_buffer_begin :: proc(
 	fence_one_time_create_info := vk.FenceCreateInfo {
 		sType = .FENCE_CREATE_INFO,
 	}
-	vk_assert(vk.CreateFence(ctx.device, &fence_one_time_create_info, nil, &ctx.fence))
+	if res := vk.CreateFence(ctx.device, &fence_one_time_create_info, nil, &ctx.fence); res != .SUCCESS do return {}, res
+	success := false
+	defer if !success do vk_one_time_cmd_buffer_destroy(&ctx)
 	cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool        = command_pool,
 		commandBufferCount = 1,
 	}
 
-	vk_assert(vk.AllocateCommandBuffers(ctx.device, &cb_one_time_alloc_info, &ctx.cmd))
+	if res := vk.AllocateCommandBuffers(ctx.device, &cb_one_time_alloc_info, &ctx.cmd); res != .SUCCESS do return {}, res
 	cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
 	}
 
-	vk_assert(vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info))
+	if res := vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info); res != .SUCCESS do return {}, res
 
-	return ctx
+	success = true
+	return ctx, .SUCCESS
 }
 
-vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Cmd_Buffer) {
-	vk_assert(vk.EndCommandBuffer(ctx.cmd))
+vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Cmd_Buffer) -> vk.Result {
+	release := true
+	defer if release do vk_one_time_cmd_buffer_destroy(ctx)
+	if res := vk.EndCommandBuffer(ctx.cmd); res != .SUCCESS do return res
 
 	submit_info := vk.SubmitInfo {
 		sType              = .SUBMIT_INFO,
 		commandBufferCount = 1,
 		pCommandBuffers    = &ctx.cmd,
 	}
-	vk_assert(vk.QueueSubmit(ctx.queue, 1, &submit_info, ctx.fence))
-	vk_assert(vk.WaitForFences(ctx.device, 1, &ctx.fence, true, max(u64)))
+	if res := vk.QueueSubmit(ctx.queue, 1, &submit_info, ctx.fence); res != .SUCCESS do return res
+	if res := vk.WaitForFences(ctx.device, 1, &ctx.fence, true, max(u64)); res != .SUCCESS {
+		idle_res := vk.DeviceWaitIdle(ctx.device)
+		if idle_res != .SUCCESS && idle_res != .ERROR_DEVICE_LOST do release = false
+		return res
+	}
+	return .SUCCESS
+}
 
+vk_one_time_cmd_buffer_destroy :: proc(ctx: ^One_Time_Cmd_Buffer) {
 	vk.DestroyFence(ctx.device, ctx.fence, nil)
-	vk.FreeCommandBuffers(ctx.device, ctx.command_pool, 1, &ctx.cmd)
+	if ctx.cmd != {} do vk.FreeCommandBuffers(ctx.device, ctx.command_pool, 1, &ctx.cmd)
 	ctx^ = {}
 }
 
@@ -177,7 +119,9 @@ vk_pipeline_init :: proc(
 	shader_module: vk.ShaderModule,
 	out_pipeline_layout: ^vk.PipelineLayout,
 	out_pipeline: ^vk.Pipeline,
+	attachment_format: vk.Format,
 ) -> vk.Result {
+	attachment_format := attachment_format
 	push_constant_range := vk.PushConstantRange {
 		stageFlags = {.VERTEX, .FRAGMENT},
 		size       = size_of(Push_Constants_Type),
@@ -225,7 +169,7 @@ vk_pipeline_init :: proc(
 	rendering_create_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
-		pColorAttachmentFormats = &IMAGE_FORMAT,
+		pColorAttachmentFormats = &attachment_format,
 	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
 		colorWriteMask      = {.R, .G, .B, .A},
@@ -406,7 +350,11 @@ vk_create_texture :: proc(
 	allocator: vma.Allocator,
 	format: vk.Format,
 	width, height, mipLevels: u32,
-) -> Texture {
+	max_allocation_size: vk.DeviceSize,
+) -> (
+	Texture,
+	vk.Result,
+) {
 	tex := Texture {
 		width  = int(width),
 		height = int(height),
@@ -423,16 +371,20 @@ vk_create_texture :: proc(
 		usage = {.TRANSFER_DST, .SAMPLED},
 		initialLayout = .UNDEFINED,
 	}
-	vk_assert(
-		vma.create_image(
-			allocator,
-			tex_img_create_info,
-			{usage = .Auto},
-			&tex.image,
-			&tex.alloc,
-			nil,
-		),
-	)
+	res := vk.CreateImage(device, &tex_img_create_info, nil, &tex.image)
+	if res != .SUCCESS do return {}, res
+	success := false
+	defer if !success {
+		vk.DestroyImage(device, tex.image, nil)
+		if tex.alloc != nil do vma.free_memory(allocator, tex.alloc)
+	}
+	requirements: vk.MemoryRequirements
+	vk.GetImageMemoryRequirements(device, tex.image, &requirements)
+	if requirements.size > max_allocation_size {
+		return {}, .ERROR_OUT_OF_DEVICE_MEMORY
+	}
+	if res := vma.allocate_memory_for_image(allocator, tex.image, {preferred_flags = {.DEVICE_LOCAL}}, &tex.alloc, nil); res != .SUCCESS do return {}, res
+	if res := vma.bind_image_memory(allocator, tex.alloc, tex.image); res != .SUCCESS do return {}, res
 	tex_view_create_info := vk.ImageViewCreateInfo {
 		sType = .IMAGE_VIEW_CREATE_INFO,
 		image = tex.image,
@@ -444,6 +396,9 @@ vk_create_texture :: proc(
 			layerCount = 1,
 		},
 	}
-	vk_assert(vk.CreateImageView(device, &tex_view_create_info, nil, &tex.view))
-	return tex
+	if res := vk.CreateImageView(device, &tex_view_create_info, nil, &tex.view); res != .SUCCESS {
+		return {}, res
+	}
+	success = true
+	return tex, .SUCCESS
 }

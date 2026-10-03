@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # compile both shader stages into one file, this requires each stage has a unique function name
 slangc quad.slang \
@@ -10,4 +11,5 @@ slangc quad.slang \
     -reflection-json quad_shader_types.json \
     -o quad.spv
 
+odin run ../tools/validate_quad_shader
 odin run ../tools/shader_types_gen

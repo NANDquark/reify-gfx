@@ -81,8 +81,10 @@ implementation reveals a reason to revise them.
 - Initially permit one active renderer/device per process because dispatch is
   global. No background probes that overwrite dispatch while rendering. Cached UI
   reports are provisional; fresh activation probes run in the serialized lifecycle.
-- Stage 1 defines common structured errors and rollback ownership; later stages
-  extend those types rather than adding incompatible error APIs.
+- Public initialization/presentation return `bool`, and resource loading returns
+  `(handle, bool)`. Failures log detailed diagnostics through `context.logger`.
+  Structured failure details remain internal where retry/cleanup needs them;
+  later stages preserve this caller-facing contract and rollback ownership.
 - Drawing coordinates are logical; swapchain/viewport/scissor extents are pixels.
   Adapters report framebuffer size and the host supplies logical resize updates.
   Zero-size windows defer presentation while valid resource operations continue.

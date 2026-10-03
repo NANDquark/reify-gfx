@@ -348,8 +348,12 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 				}
 			}
 		}
-		if !found_scalar_type do panic("vector type missing scalar type information")
-		if element_count <= 0 do panic("vector type missing element count information")
+		if !found_scalar_type {
+			panic(("vector type missing scalar type information"))
+		}
+		if element_count <= 0 {
+			panic(("vector type missing element count information"))
+		}
 
 		vec := new(Shader_Vector)
 		vec.kind = .Vector
@@ -402,7 +406,9 @@ build_odin_type :: proc(field_def: ^Shader_Field, length_override: string = "") 
 	case .Matrix:
 		fd := cast(^Shader_Matrix)field_def
 		scalar_type := "f" if fd.element_type.type == Scalar_Type_FLOAT32 else "i"
-		if fd.rows != fd.cols do panic("non-square matrixes not supported yet")
+		if fd.rows != fd.cols {
+			panic(("non-square matrixes not supported yet"))
+		}
 		fmt.sbprintf(&sb, "Mat%d%s", fd.rows, scalar_type)
 	case .Scalar:
 		fd := cast(^Shader_Scalar)field_def

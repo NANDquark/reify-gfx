@@ -34,7 +34,8 @@ resources to the registry established by the runtime-selection plan.
 - A material references a shader and owns an application parameter block. Later
   versions may add auxiliary texture bindings through ordinary `Texture_Handle`s.
 - `shader_load`, `material_create`, parameter update, and destroy operations return
-  structured errors for invalid packages, unsupported interfaces, or allocation
+  boolean failure results with logged diagnostics for invalid packages,
+  unsupported interfaces, or allocation
   failures. Do not expose raw Vulkan modules, pipelines, or GPU addresses.
 - `set_material(renderer, material)` changes the material for subsequent draws;
   `reset_material` restores built-in shading. `start` resets material selection

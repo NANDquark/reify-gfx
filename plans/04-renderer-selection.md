@@ -53,8 +53,8 @@ Proposed operations, with final Odin signatures decided during implementation:
 - `probe_backends(platform, requirements)` returns backend/device candidates,
   support status, effective limits, and rejection reasons.
 - `init(renderer, info)` keeps the stage 1 signature; extend `info.config` with
-  backend preference and required resource/capability metadata. Return the common
-  structured error on failure and expose fallback details in the selection report.
+  backend preference and required resource/capability metadata. Return `false` and
+  log failure details; expose fallback details in the selection report.
 - `renderer_backend(renderer)` reports the active backend. The current global,
   argument-free query must become instance-specific.
 - `renderer_selection(renderer)` reports requested preference, active backend,

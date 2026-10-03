@@ -84,7 +84,7 @@ VertexOutput vertMain(uint vID: SV_VertexID) {
   Instance instance = pc.data->instances[instanceIndex];
 
   float2 finalWorldPos;
-  float2 finalUV;
+  float2 finalUV = float2(0.0, 0.0);
 
   // Special case for triangles to make them a degenerate quad with a duplicate
   // point
@@ -126,7 +126,7 @@ float4 fragMain(VertexOutput input) {
   Instance_Type instance_type = Instance_Type(instance.type);
 
   if (instance_type == Instance_Type.Sprite) {
-    float4 texColor = textures[input.texture_index].Sample(input.uv);
+    float4 texColor = textures[NonUniformResourceIndex(input.texture_index)].Sample(input.uv);
     return texColor * instance.color;
   }
 
@@ -138,7 +138,7 @@ float4 fragMain(VertexOutput input) {
 
   if (instance_type == Instance_Type.MSDF) {
     Font font = fonts[instance.font_index];
-    float3 msdf = textures[instance.texture_index].Sample(input.uv).rgb;
+    float3 msdf = textures[NonUniformResourceIndex(instance.texture_index)].Sample(input.uv).rgb;
     float a = msdf_coverage(msdf, input.uv, font.tex_size, font.px_range);
     return instance.color * a;
   }
