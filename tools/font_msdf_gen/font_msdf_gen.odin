@@ -35,8 +35,9 @@ ATLAS_JSON_FILENAME :: "noto-sans-latin-400-normal-msdf.json"
 FONT_FACE_NAME :: "noto-sans-latin-400-normal"
 
 main :: proc() {
-	if err := run(); err != nil {
-		panic(fmt.tprintf("font_msdf_gen failed, err=%v", err))
+	run_error := run()
+	if run_error != nil {
+		panic(fmt.tprintf("font_msdf_gen failed, err=%v", run_error))
 	}
 }
 

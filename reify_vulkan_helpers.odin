@@ -51,7 +51,8 @@ vk_one_time_cmd_buffer_begin :: proc(
 	fence_one_time_create_info := vk.FenceCreateInfo {
 		sType = .FENCE_CREATE_INFO,
 	}
-	if res := vk.CreateFence(ctx.device, &fence_one_time_create_info, nil, &ctx.fence); res != .SUCCESS do return {}, res
+	create_fence_result := vk.CreateFence(ctx.device, &fence_one_time_create_info, nil, &ctx.fence)
+	if create_fence_result != .SUCCESS do return {}, create_fence_result
 	success := false
 	defer if !success do vk_one_time_cmd_buffer_destroy(&ctx)
 	cb_one_time_alloc_info := vk.CommandBufferAllocateInfo {
@@ -60,13 +61,15 @@ vk_one_time_cmd_buffer_begin :: proc(
 		commandBufferCount = 1,
 	}
 
-	if res := vk.AllocateCommandBuffers(ctx.device, &cb_one_time_alloc_info, &ctx.cmd); res != .SUCCESS do return {}, res
+	allocate_command_buffers_result := vk.AllocateCommandBuffers(ctx.device, &cb_one_time_alloc_info, &ctx.cmd)
+	if allocate_command_buffers_result != .SUCCESS do return {}, allocate_command_buffers_result
 	cb_one_time_buf_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
 	}
 
-	if res := vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info); res != .SUCCESS do return {}, res
+	begin_command_buffer_result := vk.BeginCommandBuffer(ctx.cmd, &cb_one_time_buf_begin_info)
+	if begin_command_buffer_result != .SUCCESS do return {}, begin_command_buffer_result
 
 	success = true
 	return ctx, .SUCCESS
@@ -75,18 +78,21 @@ vk_one_time_cmd_buffer_begin :: proc(
 vk_one_time_cmd_buffer_end :: proc(ctx: ^One_Time_Cmd_Buffer) -> vk.Result {
 	release := true
 	defer if release do vk_one_time_cmd_buffer_destroy(ctx)
-	if res := vk.EndCommandBuffer(ctx.cmd); res != .SUCCESS do return res
+	end_command_buffer_result := vk.EndCommandBuffer(ctx.cmd)
+	if end_command_buffer_result != .SUCCESS do return end_command_buffer_result
 
 	submit_info := vk.SubmitInfo {
 		sType              = .SUBMIT_INFO,
 		commandBufferCount = 1,
 		pCommandBuffers    = &ctx.cmd,
 	}
-	if res := vk.QueueSubmit(ctx.queue, 1, &submit_info, ctx.fence); res != .SUCCESS do return res
-	if res := vk.WaitForFences(ctx.device, 1, &ctx.fence, true, max(u64)); res != .SUCCESS {
+	queue_submit_result := vk.QueueSubmit(ctx.queue, 1, &submit_info, ctx.fence)
+	if queue_submit_result != .SUCCESS do return queue_submit_result
+	wait_for_fences_result := vk.WaitForFences(ctx.device, 1, &ctx.fence, true, max(u64))
+	if wait_for_fences_result != .SUCCESS {
 		idle_res := vk.DeviceWaitIdle(ctx.device)
 		if idle_res != .SUCCESS && idle_res != .ERROR_DEVICE_LOST do release = false
-		return res
+		return wait_for_fences_result
 	}
 	return .SUCCESS
 }
@@ -107,7 +113,8 @@ vk_shader_module_init :: proc(
 		codeSize = len(shader_bytes),
 		pCode    = cast(^u32)raw_data(shader_bytes),
 	}
-	if res := vk.CreateShaderModule(device, &shader_module_create_info, nil, shader_module); res != .SUCCESS do return res
+	create_shader_module_result := vk.CreateShaderModule(device, &shader_module_create_info, nil, shader_module)
+	if create_shader_module_result != .SUCCESS do return create_shader_module_result
 	return .SUCCESS
 }
 
@@ -133,7 +140,8 @@ vk_pipeline_init :: proc(
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &push_constant_range,
 	}
-	if res := vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout); res != .SUCCESS do return res
+	create_pipeline_layout_result := vk.CreatePipelineLayout(device, &pipeline_layout_create_info, nil, out_pipeline_layout)
+	if create_pipeline_layout_result != .SUCCESS do return create_pipeline_layout_result
 	vertex_input_state := vk.PipelineVertexInputStateCreateInfo {
 		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 	}
@@ -207,7 +215,8 @@ vk_pipeline_init :: proc(
 		pDynamicState       = &dynamic_state,
 		layout              = out_pipeline_layout^,
 	}
-	if res := vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, out_pipeline); res != .SUCCESS do return res
+	create_graphics_pipelines_result := vk.CreateGraphicsPipelines(device, 0, 1, &pipeline_create_info, nil, out_pipeline)
+	if create_graphics_pipelines_result != .SUCCESS do return create_graphics_pipelines_result
 	return .SUCCESS
 }
 
@@ -383,8 +392,10 @@ vk_create_texture :: proc(
 	if requirements.size > max_allocation_size {
 		return {}, .ERROR_OUT_OF_DEVICE_MEMORY
 	}
-	if res := vma.allocate_memory_for_image(allocator, tex.image, {preferred_flags = {.DEVICE_LOCAL}}, &tex.alloc, nil); res != .SUCCESS do return {}, res
-	if res := vma.bind_image_memory(allocator, tex.alloc, tex.image); res != .SUCCESS do return {}, res
+	allocate_memory_for_image_result := vma.allocate_memory_for_image(allocator, tex.image, {preferred_flags = {.DEVICE_LOCAL}}, &tex.alloc, nil)
+	if allocate_memory_for_image_result != .SUCCESS do return {}, allocate_memory_for_image_result
+	bind_image_memory_result := vma.bind_image_memory(allocator, tex.alloc, tex.image)
+	if bind_image_memory_result != .SUCCESS do return {}, bind_image_memory_result
 	tex_view_create_info := vk.ImageViewCreateInfo {
 		sType = .IMAGE_VIEW_CREATE_INFO,
 		image = tex.image,
@@ -396,8 +407,9 @@ vk_create_texture :: proc(
 			layerCount = 1,
 		},
 	}
-	if res := vk.CreateImageView(device, &tex_view_create_info, nil, &tex.view); res != .SUCCESS {
-		return {}, res
+	create_image_view_result := vk.CreateImageView(device, &tex_view_create_info, nil, &tex.view)
+	if create_image_view_result != .SUCCESS {
+		return {}, create_image_view_result
 	}
 	success = true
 	return tex, .SUCCESS

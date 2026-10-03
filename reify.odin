@@ -1,10 +1,12 @@
 package reify
 
+import "core:dynlib"
 import "core:fmt"
 import "core:log"
+import "core:mem"
 import "core:os"
+import "core:sync"
 import "core:time"
-import "lib/vma"
 import vk "vendor:vulkan"
 
 RENDERER_BACKEND :: string(#config(Renderer_Backend, "vulkan13"))
@@ -17,16 +19,113 @@ renderer_backend :: proc() -> string {
 	return RENDERER_BACKEND
 }
 
+Renderer :: struct {
+	allocator:        mem.Allocator,
+	platform:         Platform_Interface,
+	initialized:      bool,
+	loader_owned:     bool,
+	stopped:          bool,
+	frame_failed:     bool,
+	frame_started:    bool,
+	framebuffer_size: [2]int,
+	window:           struct {
+		width:      i32,
+		height:     i32,
+		projection: Mat4f,
+	},
+	perf: Renderer_Perf_Stats,
+	using backend: Renderer_Backend_State,
+}
+
+when RENDERER_BACKEND == "vulkan13" {
+	@(private)
+	Renderer_Backend_State :: Vulkan13_Renderer_State
+}
+
+Mat4f :: matrix[4, 4]f32
+
+Color :: [4]u8
+
+Rect :: struct {
+	x, y, w, h: f32,
+}
+
+FULL_UV :: Rect {x = 0, y = 0, w = 1, h = 1}
+
+Texture_Handle :: struct {
+	idx: int,
+}
+
+Texture_Metrics :: struct {
+	width, height: int,
+}
+
+Font_Face_Handle :: struct {
+	idx: int,
+}
+
 @(require_results)
 init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> bool {
-	when RENDERER_BACKEND == "vulkan13" {
-		err := vulkan13_init(r, info)
-		if err.category != .None {
-			renderer_log_error(err)
-			return false
-		}
-		return true
+	init_error := renderer_init(r, info)
+	if init_error.category != .None {
+		renderer_log_error(init_error)
+		return false
 	}
+	return true
+}
+
+@(private)
+renderer_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> Renderer_Error {
+	if r == nil {
+		return renderer_error(.Platform, .Invalid_State, "renderer pointer is nil")
+	}
+	p := info.platform
+	if p.get_framebuffer_size == nil ||
+	   p.vulkan.create_surface == nil ||
+	   p.vulkan.destroy_surface == nil {
+		return renderer_error(
+			.Platform,
+			.Missing_Capability,
+			"framebuffer size and all Vulkan surface callbacks are required",
+		)
+	}
+	if info.logical_size.x < 0 ||
+	   info.logical_size.y < 0 ||
+	   info.logical_size.x > int(max(i32)) ||
+	   info.logical_size.y > int(max(i32)) {
+		return renderer_error(.Platform, .Invalid_State, "logical dimensions must fit nonnegative i32")
+	}
+	_, reserved := sync.atomic_compare_exchange_strong(&active_renderer, cast(^Renderer)nil, r)
+	if !reserved {
+		return renderer_error(.Platform, .Invalid_State, "only one active renderer is supported")
+	}
+	success := false
+	defer {
+		if !success {
+			renderer_cleanup(r)
+		}
+	}
+	r^ = {}
+	r.allocator = info.allocator
+	if r.allocator.procedure == nil do r.allocator = context.allocator
+	context.allocator = r.allocator
+	if info.temp_allocator.procedure != nil do context.temp_allocator = info.temp_allocator
+	r.platform = p
+	r.platform.vulkan.required_instance_extensions = nil
+	if !renderer_loader_init() {
+		return renderer_error(.Loader, .Vulkan_Failure, "Vulkan loader unavailable")
+	}
+	r.loader_owned = true
+	r.window.width, r.window.height = i32(info.logical_size.x), i32(info.logical_size.y)
+	when RENDERER_BACKEND == "vulkan13" {
+		backend_error := vulkan13_init(r, info)
+		if backend_error.category != .None do return backend_error
+	}
+	r.initialized = true
+	now := time.now()
+	r.perf.last_log_time, r.perf.fps_last_log = now, now
+	success = true
+	return {}
 }
 
 set_vsync :: proc(r: ^Renderer, enabled: bool) {
@@ -156,10 +255,66 @@ present :: proc(r: ^Renderer) -> bool {
 destroy :: proc(r: ^Renderer) {
 	if r == nil do return
 	r.stopped = true
+	if !r.loader_owned do return
+	renderer_cleanup(r)
+}
 
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_destroy(r)
+@(private)
+renderer_cleanup :: proc(r: ^Renderer) {
+	if r.loader_owned {
+		when RENDERER_BACKEND == "vulkan13" {
+			vulkan13_destroy(r)
+		}
+		renderer_loader_shutdown()
 	}
+	r^ = {}
+	sync.atomic_store(&active_renderer, cast(^Renderer)nil)
+}
+
+@(private)
+// Non-owning reservation: the caller owns Renderer storage. Global Vulkan dispatch
+// and loader state permit only one active renderer per process.
+active_renderer: ^Renderer
+
+@(private)
+vulkan_lib: dynlib.Library
+
+renderer_loader_init :: proc() -> bool {
+	libs: []string
+	when ODIN_OS == .Windows {
+		libs = []string{"vulkan-1.dll"}
+	} else when ODIN_OS == .Linux {
+		libs = []string{"libvulkan.so.1", "libvulkan.so"}
+	} else {
+		return false
+	}
+
+	for name in libs {
+		lib, ok := dynlib.load_library(name)
+		if !ok do continue
+		sym, found := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
+		if !found {
+			dynlib.unload_library(lib)
+			continue
+		}
+		vulkan_lib = lib
+		get_instance_proc_address: vk.ProcGetInstanceProcAddr = auto_cast sym
+		vk.load_proc_addresses((rawptr)(get_instance_proc_address))
+		if vk.CreateInstance == nil ||
+		   vk.EnumerateInstanceExtensionProperties == nil ||
+		   vk.EnumerateInstanceLayerProperties == nil {
+			dynlib.unload_library(lib)
+			vulkan_lib = {}
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+renderer_loader_shutdown :: proc() {
+	dynlib.unload_library(vulkan_lib)
+	vulkan_lib = {}
 }
 
 window_size :: proc(r: ^Renderer) -> (w, h: f32) {
@@ -340,206 +495,14 @@ Renderer_Perf_Stats :: struct {
 	fps_value:     f32,
 }
 
-vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
-	if r == nil {
-		return false
-	}
-	if .TRANSFER_SRC not_in r.swapchain.create_info.imageUsage do return false
-	image_count := len(r.swapchain.images)
-	if image_count <= 0 {
-		log.error("vulkan13 debug capture failed: no swapchain images")
-		return false
-	}
-	width := int(r.swapchain.create_info.imageExtent.width)
-	height := int(r.swapchain.create_info.imageExtent.height)
-	if width <= 0 || height <= 0 {
-		log.errorf("vulkan13 debug capture invalid extent: %dx%d", width, height)
-		return false
-	}
-	bytes_needed := width * height * 4
-
-	if vk.DeviceWaitIdle(r.gpu.device) != .SUCCESS {
-		log.error("vulkan13 debug capture: vkDeviceWaitIdle failed")
-		return false
-	}
-
-	staging_buf_info := vk.BufferCreateInfo {
-		sType       = .BUFFER_CREATE_INFO,
-		size        = vk.DeviceSize(bytes_needed),
-		usage       = {.TRANSFER_DST},
-		sharingMode = .EXCLUSIVE,
-	}
-	staging_alloc_info := vma.Allocation_Create_Info {
-		usage = .Gpu_To_Cpu,
-		flags = {.Host_Access_Sequential_Write, .Mapped},
-	}
-	staging_buf: vk.Buffer
-	staging_alloc: vma.Allocation
-	vma_info: vma.Allocation_Info
-	if vma.create_buffer(
-		   r.gpu.allocator,
-		   staging_buf_info,
-		   staging_alloc_info,
-		   &staging_buf,
-		   &staging_alloc,
-		   &vma_info,
-	   ) !=
-	   .SUCCESS {
-		log.error("vulkan13 debug capture failed: could not create staging buffer")
-		return false
-	}
-	defer vma.destroy_buffer(r.gpu.allocator, staging_buf, staging_alloc)
-
-	if vma_info.mapped_data == nil {
-		log.error("vulkan13 debug capture failed: staging buffer not mapped")
-		return false
-	}
-	mapped_rgba := ([^]u8)(vma_info.mapped_data)[:bytes_needed]
-	best_rgba := make([]u8, bytes_needed)
-	best_score := -1
-
-	vk_assert_local := proc(res: vk.Result) -> bool {
-		if res == .SUCCESS {
-			return true
-		}
-		log.errorf("vulkan13 debug capture vk call failed: %v", res)
-		return false
-	}
-
-	for i in 0 ..< image_count {
-		cmd: vk.CommandBuffer
-		cmd_alloc := vk.CommandBufferAllocateInfo {
-			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
-			commandPool        = r.command_pool,
-			commandBufferCount = 1,
-		}
-		if !vk_assert_local(vk.AllocateCommandBuffers(r.gpu.device, &cmd_alloc, &cmd)) {
-			return false
-		}
-		fence: vk.Fence
-		fence_info := vk.FenceCreateInfo {
-			sType = .FENCE_CREATE_INFO,
-		}
-		if !vk_assert_local(vk.CreateFence(r.gpu.device, &fence_info, nil, &fence)) {
-			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-			return false
-		}
-		begin_info := vk.CommandBufferBeginInfo {
-			sType = .COMMAND_BUFFER_BEGIN_INFO,
-			flags = {.ONE_TIME_SUBMIT},
-		}
-		if !vk_assert_local(vk.BeginCommandBuffer(cmd, &begin_info)) {
-			vk.DestroyFence(r.gpu.device, fence, nil)
-			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-			return false
-		}
-		to_transfer := vk.ImageMemoryBarrier2 {
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			srcStageMask = {.TOP_OF_PIPE},
-			dstStageMask = {.TRANSFER},
-			dstAccessMask = {.TRANSFER_READ},
-			oldLayout = .PRESENT_SRC_KHR,
-			newLayout = .TRANSFER_SRC_OPTIMAL,
-			image = r.swapchain.images[i],
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-		}
-		dep_a := vk.DependencyInfo {
-			sType                   = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers    = &to_transfer,
-		}
-		vk.CmdPipelineBarrier2(cmd, &dep_a)
-		copy_region := vk.BufferImageCopy {
-			imageSubresource = {
-				aspectMask = {.COLOR},
-				mipLevel = 0,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			},
-			imageExtent = {width = u32(width), height = u32(height), depth = 1},
-		}
-		vk.CmdCopyImageToBuffer(
-			cmd,
-			r.swapchain.images[i],
-			.TRANSFER_SRC_OPTIMAL,
-			staging_buf,
-			1,
-			&copy_region,
-		)
-		to_present := vk.ImageMemoryBarrier2 {
-			sType = .IMAGE_MEMORY_BARRIER_2,
-			srcStageMask = {.TRANSFER},
-			srcAccessMask = {.TRANSFER_READ},
-			dstStageMask = {.TOP_OF_PIPE},
-			oldLayout = .TRANSFER_SRC_OPTIMAL,
-			newLayout = .PRESENT_SRC_KHR,
-			image = r.swapchain.images[i],
-			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
-		}
-		dep_b := vk.DependencyInfo {
-			sType                   = .DEPENDENCY_INFO,
-			imageMemoryBarrierCount = 1,
-			pImageMemoryBarriers    = &to_present,
-		}
-		vk.CmdPipelineBarrier2(cmd, &dep_b)
-		if !vk_assert_local(vk.EndCommandBuffer(cmd)) {
-			vk.DestroyFence(r.gpu.device, fence, nil)
-			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-			return false
-		}
-		submit := vk.SubmitInfo {
-			sType              = .SUBMIT_INFO,
-			commandBufferCount = 1,
-			pCommandBuffers    = &cmd,
-		}
-		if !vk_assert_local(vk.QueueSubmit(r.gpu.queue, 1, &submit, fence)) {
-			vk.DestroyFence(r.gpu.device, fence, nil)
-			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-			return false
-		}
-		if !vk_assert_local(vk.WaitForFences(r.gpu.device, 1, &fence, true, max(u64))) {
-			vk.DestroyFence(r.gpu.device, fence, nil)
-			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-			return false
-		}
-		vk.DestroyFence(r.gpu.device, fence, nil)
-		vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
-
-		score := 0
-		for pi in 0 ..< bytes_needed {
-			if pi % 4 != 0 {
-				continue
-			}
-			if mapped_rgba[pi + 0] != 0 || mapped_rgba[pi + 1] != 0 || mapped_rgba[pi + 2] != 0 {
-				score += 1
-			}
-		}
-		if score > best_score {
-			best_score = score
-			copy(best_rgba, mapped_rgba)
-		}
-	}
-
-	bgra :=
-		r.swapchain.create_info.imageFormat == .B8G8R8A8_UNORM ||
-		r.swapchain.create_info.imageFormat == .B8G8R8A8_SRGB
-	return renderer_capture_write_ppm(
-		path,
-		best_rgba,
-		width,
-		height,
-		bgra_order = bgra,
-		flip_y = false,
-	)
-}
-
 renderer_capture_ensure_parent_dir :: proc(path: string) -> bool {
 	dir, _ := os.split_path(path)
 	if len(dir) == 0 {
 		return true
 	}
-	if err := os.make_directory_all(dir); err != nil && err != os.General_Error.Exist {
-		log.errorf("failed to create capture dir `%s`: %v", dir, err)
+	directory_error := os.make_directory_all(dir)
+	if directory_error != nil && directory_error != os.General_Error.Exist {
+		log.errorf("failed to create capture dir `%s`: %v", dir, directory_error)
 		return false
 	}
 	return true
@@ -591,8 +554,9 @@ renderer_capture_write_ppm :: proc(
 			dst_idx += 3
 		}
 	}
-	if err := os.write_entire_file(path, out); err != nil {
-		log.errorf("failed to write capture `%s`: %v", path, err)
+	write_error := os.write_entire_file(path, out)
+	if write_error != nil {
+		log.errorf("failed to write capture `%s`: %v", path, write_error)
 		return false
 	}
 	return true

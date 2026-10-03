@@ -7,8 +7,9 @@ import "core:path/filepath"
 import "core:strings"
 
 main :: proc() {
-	if err := run(); err != nil {
-		panic(fmt.tprintf("validate_quad_shader failed, err=%v", err))
+	run_error := run()
+	if run_error != nil {
+		panic(fmt.tprintf("validate_quad_shader failed, err=%v", run_error))
 	}
 }
 
@@ -23,7 +24,8 @@ run :: proc() -> Error {
 	assembly, disassembly_err := run_command([]string{"spirv-dis", shader})
 	defer delete(assembly)
 	if disassembly_err != nil do return disassembly_err
-	if message := audit_assembly(string(assembly)); message != "" do return Tool_Error{message}
+	audit_message := audit_assembly(string(assembly))
+	if audit_message != "" do return Tool_Error{audit_message}
 	fmt.println("Vulkan 1.3 shader capability, non-uniform indexing, and layout audit passed")
 	return nil
 }
@@ -70,7 +72,8 @@ audit_assembly :: proc(assembly: string) -> string {
 			delete(fields)
 			continue
 		}
-		if _, append_err := append(&instructions, fields); append_err != nil {
+		_, append_err := append(&instructions, fields)
+		if append_err != nil {
 			delete(fields)
 			return "shader instruction table allocation failed"
 		}

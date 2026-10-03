@@ -28,14 +28,14 @@ platform_lifecycle :: proc(t: ^testing.T) {
 		case 2:
 			bad.platform.vulkan.destroy_surface = nil
 		}
-		err := vulkan13_init(r, bad)
+		err := renderer_init(r, bad)
 		testing.expect_value(t, err.category, Renderer_Error_Category.Missing_Capability)
 		testing.expect(t, active_renderer == nil && !r.loader_owned)
 	}
 	other := new(Renderer)
 	defer free(other)
 	sync.atomic_store(&active_renderer, r)
-	occupied := vulkan13_init(other, info)
+	occupied := renderer_init(other, info)
 	testing.expect_value(t, occupied.category, Renderer_Error_Category.Invalid_State)
 	testing.expect(t, active_renderer == r && !other.loader_owned)
 	destroy(other)
@@ -48,7 +48,7 @@ platform_lifecycle :: proc(t: ^testing.T) {
 		}
 		if mode == .Missing_Extension do state.extensions[0] = "VK_REIFY_missing_extension"
 		if mode == .Nil_Extension do state.extensions[0] = nil
-		err := vulkan13_init(r, info)
+		err := renderer_init(r, info)
 		testing.expect(t, err.category != .None)
 		testing.expect(t, active_renderer == nil && !r.loader_owned && r.gpu.instance == {})
 		testing.expect(t, len(r.platform.vulkan.required_instance_extensions) == 0)

@@ -11,8 +11,9 @@ import "core:time"
 QUAD_SHADER_TYPES_BYTES :: #load("../../assets/quad_shader_types.json")
 
 main :: proc() {
-	if err := run(); err != nil {
-		panic(fmt.tprintf("shader_types_gen failed, err=%v", err))
+	run_error := run()
+	if run_error != nil {
+		panic(fmt.tprintf("shader_types_gen failed, err=%v", run_error))
 	}
 }
 
@@ -236,7 +237,8 @@ SCALAR_TO_ODIN := map[Scalar_Type]string {
 json_search_by_name :: proc(value: json.Value, target_name: string) -> (json.Object, bool) {
 	#partial switch v in value {
 	case json.Object:
-		if name, ok := v["name"]; ok {
+		name, has_name := v["name"]
+		if has_name {
 			name_str, name_is_str := name.(json.String)
 			if name_is_str && name_str == target_name {
 				return v, true
@@ -322,15 +324,19 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 		field = scalar
 	case "vector":
 		element_count := 0
-		if raw_count, ok := type_obj["elementCount"]; ok {
+		raw_count, has_count := type_obj["elementCount"]
+		if has_count {
 			element_count = int(raw_count.(json.Float))
 		}
 
 		scalar_type: Scalar_Type
 		found_scalar_type := false
-		if raw_element_type, ok := type_obj["elementType"]; ok {
-			if element_type, element_ok := raw_element_type.(json.Object); element_ok {
-				if raw_scalar_type, scalar_ok := element_type["scalarType"]; scalar_ok {
+		raw_element_type, has_element_type := type_obj["elementType"]
+		if has_element_type {
+			element_type, element_ok := raw_element_type.(json.Object)
+			if element_ok {
+				raw_scalar_type, scalar_ok := element_type["scalarType"]
+				if scalar_ok {
 					scalar_type = canonical_scalar_type(raw_scalar_type.(json.String))
 					found_scalar_type = true
 				}
@@ -339,7 +345,8 @@ convert_field_type :: proc(type_obj: json.Object, prefix: string) -> ^Shader_Fie
 
 		// Some Slang reflection outputs encode vectors by name (for example: uint32_t2).
 		if !found_scalar_type {
-			if raw_name, ok := type_obj["name"]; ok {
+			raw_name, has_type_name := type_obj["name"]
+			if has_type_name {
 				type_name := raw_name.(json.String)
 				if type_name == "uint32_t2" {
 					scalar_type = Scalar_Type_UINT32

@@ -1,6 +1,5 @@
 package reify
 
-import "core:dynlib"
 import "core:encoding/json"
 import "core:fmt"
 import "core:image"
@@ -9,7 +8,6 @@ import "core:math"
 import "core:math/linalg"
 import "core:mem"
 import "core:slice"
-import "core:sync"
 import "core:time"
 import "lib/vma"
 import vk "vendor:vulkan"
@@ -25,25 +23,11 @@ DESC_BINDING_TEXTURES :: 0
 DESC_BINDING_FONTS :: 1
 ENABLE_VK_VALIDATION :: bool(#config(Reify_Enable_Validation, false))
 
-Renderer :: struct {
-	allocator:        mem.Allocator,
-	platform:         Platform_Interface,
-	initialized:      bool,
-	// The Renderer has dynamically loaded the vulkan library, used for proper destruction in the case of partial failure
-	loader_owned:     bool,
-	stopped:          bool,
-	frame_failed:     bool,
-	frame_started:    bool,
+Vulkan13_Renderer_State :: struct {
 	pending_upload:   One_Time_Cmd_Buffer,
 	pending_texture:  Texture,
-	framebuffer_size: [2]int,
 	gpu:              GPU_Context,
 	surface:          vk.SurfaceKHR,
-	window:           struct {
-		width:      i32,
-		height:     i32,
-		projection: Mat4f,
-	},
 	swapchain:        Swapchain_Context,
 	resources:        struct {
 		textures:             [dynamic]Texture, // TODO: convert to handle_map to support removals
@@ -71,7 +55,6 @@ Renderer :: struct {
 	shader_module:    vk.ShaderModule,
 	frame_index:      int,
 	frame_contexts:   [MAX_FRAME_IN_FLIGHT]Frame_Context,
-	perf:             Renderer_Perf_Stats,
 }
 
 GPU_Context :: struct {
@@ -133,14 +116,6 @@ Projection_Type :: enum {
 	Screen,
 }
 
-Mat4f :: matrix[4, 4]f32
-
-Color :: [4]u8
-
-Rect :: struct {
-	x, y, w, h: f32,
-}
-
 // Translate a Vulkan result into the backend-independent renderer result.
 @(private)
 vk_result :: proc(res: vk.Result) -> Renderer_Result {
@@ -165,55 +140,9 @@ vk_result :: proc(res: vk.Result) -> Renderer_Result {
 
 @(private)
 vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_Error) {
-	if r == nil {
-		return renderer_error(.Platform, .Invalid_State, "renderer pointer is nil")
-	}
 	p := info.platform
-	if p.get_framebuffer_size == nil ||
-	   p.vulkan.create_surface == nil ||
-	   p.vulkan.destroy_surface == nil {
-		return renderer_error(
-			.Platform,
-			.Missing_Capability,
-			"framebuffer size and all Vulkan surface callbacks are required",
-		)
-	}
-	if info.logical_size.x < 0 ||
-	   info.logical_size.y < 0 ||
-	   info.logical_size.x > int(max(i32)) ||
-	   info.logical_size.y > int(max(i32)) {
-		return renderer_error(
-			.Platform,
-			.Invalid_State,
-			"logical dimensions must fit nonnegative i32",
-		)
-	}
-	if _, reserved := sync.atomic_compare_exchange_strong(&active_renderer, cast(^Renderer)nil, r);
-	   !reserved {
-		return renderer_error(.Platform, .Invalid_State, "only one active renderer is supported")
-	}
-	success := false
-	defer {
-		if !success {
-			if r.loader_owned {
-				vulkan13_destroy(r)
-			} else {
-				sync.atomic_store(&active_renderer, cast(^Renderer)nil)
-			}
-		}
-	}
-	r^ = {}
-	r.allocator = info.allocator
-	if r.allocator.procedure == nil do r.allocator = context.allocator
-	context.allocator = r.allocator
-	if info.temp_allocator.procedure != nil do context.temp_allocator = info.temp_allocator
-	r.platform = p
-	r.platform.vulkan.required_instance_extensions = nil
-	if !renderer_loader_init() {
-		return renderer_error(.Loader, .Vulkan_Failure, "Vulkan loader unavailable")
-	}
-	r.loader_owned = true
-	if err := gpu_init(r, p.vulkan.required_instance_extensions); err.category != .None do return err
+	gpu_error := gpu_init(r, p.vulkan.required_instance_extensions)
+	if gpu_error.category != .None do return gpu_error
 	framebuffer, framebuffer_err := r.platform.get_framebuffer_size(r.platform.user_data)
 	if framebuffer_err.message != "" || framebuffer_err.result != .SUCCESS {
 		return renderer_error(
@@ -240,7 +169,6 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		r.gpu.initial_allocation_estimate,
 	)
 	r.swapchain.vsync_enabled = info.config.vsync
-	r.window.width, r.window.height = i32(info.logical_size.x), i32(info.logical_size.y)
 	r.window.projection = vk_ortho_projection(
 		0,
 		f32(max(1, r.window.width)),
@@ -263,19 +191,20 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		usage          = .Auto,
 		required_flags = {.HOST_VISIBLE},
 	}
-	if res := vma.create_buffer(
+	index_buffer_result := vma.create_buffer(
 		r.gpu.allocator,
 		index_buf_create_info,
 		index_buf_alloc_create_info,
 		&r.resources.index_buffer,
 		&r.resources.index_alloc,
 		nil,
-	); res != .SUCCESS {
+	)
+	if index_buffer_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(index_buffer_result),
 		)
 	}
 	alloc_info: vma.Allocation_Info
@@ -295,13 +224,13 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		indices[i_offset + 4] = v_offset + 3
 		indices[i_offset + 5] = v_offset + 0
 	}
-	if res := vma.flush_allocation(r.gpu.allocator, r.resources.index_alloc, 0, index_buf_size);
-	   res != .SUCCESS {
+	index_flush_result := vma.flush_allocation(r.gpu.allocator, r.resources.index_alloc, 0, index_buf_size)
+	if index_flush_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"index buffer flush failed",
-			vk_result(res),
+			vk_result(index_flush_result),
 		)
 	}
 
@@ -319,17 +248,18 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		maxAnisotropy    = 8, // widely used
 		maxLod           = vk.LOD_CLAMP_NONE,
 	}
-	if res := vk.CreateSampler(
+	texture_sampler_result := vk.CreateSampler(
 		r.gpu.device,
 		&tex_sampler_create_info,
 		nil,
 		&r.resources.tex_sampler,
-	); res != .SUCCESS {
+	)
+	if texture_sampler_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(texture_sampler_result),
 		)
 	}
 	msdf_sampler_create_info := vk.SamplerCreateInfo {
@@ -343,17 +273,18 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		maxAnisotropy    = 8, // widely used
 		maxLod           = 0,
 	}
-	if res := vk.CreateSampler(
+	msdf_sampler_result := vk.CreateSampler(
 		r.gpu.device,
 		&msdf_sampler_create_info,
 		nil,
 		&r.resources.msdf_sampler,
-	); res != .SUCCESS {
+	)
+	if msdf_sampler_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(msdf_sampler_result),
 		)
 	}
 
@@ -369,31 +300,33 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 			usage          = .Auto,
 			required_flags = {.HOST_VISIBLE},
 		}
-		if res := vma.create_buffer(
+		instance_buffer_result := vma.create_buffer(
 			r.gpu.allocator,
 			u_buffer_create_info,
 			u_buffer_alloc_create_info,
 			&r.frame_contexts[i].shader_data_buffer.buffer,
 			&r.frame_contexts[i].shader_data_buffer.alloc,
 			nil,
-		); res != .SUCCESS {
+		)
+		if instance_buffer_result != .SUCCESS {
 			return renderer_error(
 				.Resources,
 				.Vulkan_Failure,
 				"GPU resource initialization failed",
-				vk_result(res),
+				vk_result(instance_buffer_result),
 			)
 		}
-		if res := vma.map_memory(
+		instance_map_result := vma.map_memory(
 			r.gpu.allocator,
 			r.frame_contexts[i].shader_data_buffer.alloc,
 			&r.frame_contexts[i].shader_data_buffer.mapped,
-		); res != .SUCCESS {
+		)
+		if instance_map_result != .SUCCESS {
 			return renderer_error(
 				.Resources,
 				.Vulkan_Failure,
 				"GPU resource initialization failed",
-				vk_result(res),
+				vk_result(instance_map_result),
 			)
 		}
 		if r.frame_contexts[i].shader_data_buffer.mapped == nil {
@@ -424,30 +357,32 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		flags = {.SIGNALED},
 	}
 	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
-		if res := vk.CreateFence(
+		fence_result := vk.CreateFence(
 			r.gpu.device,
 			&fence_create_info,
 			nil,
 			&r.frame_contexts[i].fence,
-		); res != .SUCCESS {
+		)
+		if fence_result != .SUCCESS {
 			return renderer_error(
 				.Resources,
 				.Vulkan_Failure,
 				"GPU resource initialization failed",
-				vk_result(res),
+				vk_result(fence_result),
 			)
 		}
-		if res := vk.CreateSemaphore(
+		semaphore_result := vk.CreateSemaphore(
 			r.gpu.device,
 			&semaphore_create_info,
 			nil,
 			&r.frame_contexts[i].present_semaphore,
-		); res != .SUCCESS {
+		)
+		if semaphore_result != .SUCCESS {
 			return renderer_error(
 				.Resources,
 				.Vulkan_Failure,
 				"GPU resource initialization failed",
-				vk_result(res),
+				vk_result(semaphore_result),
 			)
 		}
 	}
@@ -458,13 +393,13 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		flags            = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = r.gpu.queue_family,
 	}
-	if res := vk.CreateCommandPool(r.gpu.device, &command_pool_create_info, nil, &r.command_pool);
-	   res != .SUCCESS {
+	command_pool_result := vk.CreateCommandPool(r.gpu.device, &command_pool_create_info, nil, &r.command_pool)
+	if command_pool_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(command_pool_result),
 		)
 	}
 	command_buffer_alloc_info := vk.CommandBufferAllocateInfo {
@@ -476,16 +411,17 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	// we cannot allocate an array of command buffers so we do it as two separate
 	// allocations
 	for &fctx in r.frame_contexts {
-		if res := vk.AllocateCommandBuffers(
+		command_buffer_result := vk.AllocateCommandBuffers(
 			r.gpu.device,
 			&command_buffer_alloc_info,
 			&fctx.command_buffer,
-		); res != .SUCCESS {
+		)
+		if command_buffer_result != .SUCCESS {
 			return renderer_error(
 				.Resources,
 				.Vulkan_Failure,
 				"GPU resource initialization failed",
-				vk_result(res),
+				vk_result(command_buffer_result),
 			)
 		}
 	}
@@ -502,19 +438,20 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		required_flags  = {.HOST_VISIBLE},
 		preferred_flags = {.HOST_COHERENT},
 	}
-	if res := vma.create_buffer(
+	font_staging_result := vma.create_buffer(
 		r.gpu.allocator,
 		font_staging_buf_create_info,
 		font_staging_buf_alloc_create_info,
 		&r.resources.font_staging_buffer,
 		&r.resources.font_staging_alloc,
 		nil,
-	); res != .SUCCESS {
+	)
+	if font_staging_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(font_staging_result),
 		)
 	}
 	font_staging_alloc_info: vma.Allocation_Info
@@ -536,19 +473,20 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		usage          = .Auto,
 		required_flags = {.DEVICE_LOCAL},
 	}
-	if res := vma.create_buffer(
+	font_buffer_result := vma.create_buffer(
 		r.gpu.allocator,
 		font_device_buffer_create_info,
 		font_device_alloc_create_info,
 		&r.resources.font_device_buffer,
 		&r.resources.font_device_alloc,
 		nil,
-	); res != .SUCCESS {
+	)
+	if font_buffer_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(font_buffer_result),
 		)
 	}
 
@@ -598,17 +536,18 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		bindingCount = len(desc_layout_bindings),
 		pBindings    = raw_data(desc_layout_bindings[:]),
 	}
-	if res := vk.CreateDescriptorSetLayout(
+	descriptor_layout_result := vk.CreateDescriptorSetLayout(
 		r.gpu.device,
 		&desc_layout_create_info,
 		nil,
 		&r.resources.desc_set_layout,
-	); res != .SUCCESS {
+	)
+	if descriptor_layout_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(descriptor_layout_result),
 		)
 	}
 	desc_pool_sizes := [?]vk.DescriptorPoolSize {
@@ -621,17 +560,18 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		poolSizeCount = len(desc_pool_sizes),
 		pPoolSizes    = raw_data(desc_pool_sizes[:]),
 	}
-	if res := vk.CreateDescriptorPool(
+	descriptor_pool_result := vk.CreateDescriptorPool(
 		r.gpu.device,
 		&desc_pool_create_info,
 		nil,
 		&r.resources.desc_pool,
-	); res != .SUCCESS {
+	)
+	if descriptor_pool_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(descriptor_pool_result),
 		)
 	}
 	desc_set_alloc := vk.DescriptorSetAllocateInfo {
@@ -640,13 +580,13 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		descriptorSetCount = 1,
 		pSetLayouts        = &r.resources.desc_set_layout,
 	}
-	if res := vk.AllocateDescriptorSets(r.gpu.device, &desc_set_alloc, &r.resources.desc_set);
-	   res != .SUCCESS {
+	descriptor_set_result := vk.AllocateDescriptorSets(r.gpu.device, &desc_set_alloc, &r.resources.desc_set)
+	if descriptor_set_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(descriptor_set_result),
 		)
 	}
 	font_info := vk.DescriptorBufferInfo {
@@ -663,18 +603,19 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	}
 	vk.UpdateDescriptorSets(r.gpu.device, 1, &font_write, 0, nil)
 	// Slot zero is a live fallback for every unused texture descriptor.
-	if _, err := vulkan13_texture_load(r, []Color{{255, 255, 255, 255}}, 1, 1); err.category != .None do return err
+	_, fallback_error := vulkan13_texture_load(r, []Color{{255, 255, 255, 255}}, 1, 1)
+	if fallback_error.category != .None do return fallback_error
 
-	if res := vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES);
-	   res != .SUCCESS {
+	shader_module_result := vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES)
+	if shader_module_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"shader module creation failed",
-			vk_result(res),
+			vk_result(shader_module_result),
 		)
 	}
-	if res := vk_pipeline_init(
+	pipeline_result := vk_pipeline_init(
 		r.gpu.device,
 		Quad_Push_Constants,
 		Quad_Instance,
@@ -683,21 +624,19 @@ vulkan13_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		&r.pipeline_layout,
 		&r.pipeline,
 		r.gpu.surface_format.format,
-	); res != .SUCCESS {
+	)
+	if pipeline_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"pipeline creation failed",
-			vk_result(res),
+			vk_result(pipeline_result),
 		)
 	}
-	if err := vulkan13_update_swapchain(r); err.category != .None do return err
-	r.initialized = true
+	swapchain_error := vulkan13_update_swapchain(r)
+	if swapchain_error.category != .None do return swapchain_error
 	vulkan13_refresh_memory(&r.gpu)
 	fmt.printf("Effective staging capacity: %d bytes\n", r.gpu.limits.staging_bytes)
-	now := time.now()
-	r.perf.last_log_time, r.perf.fps_last_log = now, now
-	success = true
 	return {}
 }
 
@@ -710,7 +649,7 @@ vulkan13_set_vsync :: proc(r: ^Renderer, enabled: bool) {
 }
 
 vulkan13_destroy :: proc(r: ^Renderer) {
-	if r == nil || !r.loader_owned do return
+	if r == nil do return
 
 	context.allocator = r.allocator
 	if r.gpu.device != {} {
@@ -766,9 +705,7 @@ vulkan13_destroy :: proc(r: ^Renderer) {
 	if r.gpu.device != {} do vk.DestroyDevice(r.gpu.device, nil)
 	if r.surface != {} do r.platform.vulkan.destroy_surface(r.platform.user_data, r.gpu.instance, r.surface)
 	if r.gpu.instance != {} do vk.DestroyInstance(r.gpu.instance, nil)
-	renderer_loader_shutdown()
-	sync.atomic_store(&active_renderer, cast(^Renderer)nil)
-	r^ = {}
+	r.backend = {}
 }
 
 @(private)
@@ -947,13 +884,13 @@ swapchain_context_init :: proc(
 			format = sc.create_info.imageFormat,
 			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		if res := vk.CreateImageView(sc.gpu.device, &view_create_info, nil, &sc.views[i]);
-		   res != .SUCCESS {
+		view_result := vk.CreateImageView(sc.gpu.device, &view_create_info, nil, &sc.views[i])
+		if view_result != .SUCCESS {
 			return renderer_error(
 				.Presentation,
 				.Vulkan_Failure,
 				"swapchain initialization failed",
-				vk_result(res),
+				vk_result(view_result),
 			)
 		}
 	}
@@ -967,13 +904,13 @@ swapchain_context_init :: proc(
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
 	for &s in sc.render_semaphores {
-		if res := vk.CreateSemaphore(sc.gpu.device, &semaphore_create_info, nil, &s);
-		   res != .SUCCESS {
+		semaphore_result := vk.CreateSemaphore(sc.gpu.device, &semaphore_create_info, nil, &s)
+		if semaphore_result != .SUCCESS {
 			return renderer_error(
 				.Presentation,
 				.Vulkan_Failure,
 				"swapchain initialization failed",
-				vk_result(res),
+				vk_result(semaphore_result),
 			)
 		}
 	}
@@ -1022,12 +959,13 @@ gpu_init :: proc(
 		)
 	}
 	loader_version: u32
-	if res := vk.EnumerateInstanceVersion(&loader_version); res != .SUCCESS {
+	loader_result := vk.EnumerateInstanceVersion(&loader_version)
+	if loader_result != .SUCCESS {
 		return renderer_error(
 			.Loader,
 			.Vulkan_Failure,
 			"loader version query failed",
-			vk_result(res),
+			vk_result(loader_result),
 		)
 	}
 	if loader_version < vk.API_VERSION_1_3 {
@@ -1122,12 +1060,13 @@ gpu_init :: proc(
 		enabledLayerCount = enabled_layer_count,
 		ppEnabledLayerNames = &enabled_layers[0],
 	}
-	if res := vk.CreateInstance(instance_create_info, nil, &dctx.instance); res != .SUCCESS {
+	instance_result := vk.CreateInstance(instance_create_info, nil, &dctx.instance)
+	if instance_result != .SUCCESS {
 		return renderer_error(
 			.Instance,
 			.Vulkan_Failure,
 			"instance creation failed",
-			vk_result(res),
+			vk_result(instance_result),
 		)
 	}
 	vk.load_proc_addresses(dctx.instance)
@@ -1213,13 +1152,13 @@ gpu_init :: proc(
 		for q, i in queues {
 			if q.queueCount == 0 do continue
 			supported: b32
-			if res := vk.GetPhysicalDeviceSurfaceSupportKHR(pd, u32(i), r.surface, &supported);
-			   res != .SUCCESS {
+			support_result := vk.GetPhysicalDeviceSurfaceSupportKHR(pd, u32(i), r.surface, &supported)
+			if support_result != .SUCCESS {
 				return renderer_error(
 					.Device,
 					.Vulkan_Failure,
 					"presentation support query failed",
-					vk_result(res),
+					vk_result(support_result),
 				)
 			}
 			present_support[i] = bool(supported)
@@ -1242,14 +1181,15 @@ gpu_init :: proc(
 		if rejected.error.category == .None {
 			texture_formats := [?]vk.Format{.R8G8B8A8_SRGB, .R8G8B8A8_UNORM}
 			for format in texture_formats {
-				if err := vulkan13_check_texture_format(
+				format_error := vulkan13_check_texture_format(
 					pd,
 					format,
 					1,
 					1,
 					format == .R8G8B8A8_UNORM,
-				); err.category != .None {
-					rejected.error = err
+				)
+				if format_error.category != .None {
+					rejected.error = format_error
 					break
 				}
 			}
@@ -1286,13 +1226,13 @@ gpu_init :: proc(
 			)
 		}
 		surface_caps: vk.SurfaceCapabilitiesKHR
-		if res := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, r.surface, &surface_caps);
-		   res != .SUCCESS {
+		capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, r.surface, &surface_caps)
+		if capabilities_result != .SUCCESS {
 			return renderer_error(
 				.Device,
 				.Vulkan_Failure,
 				"surface capabilities query failed",
-				vk_result(res),
+				vk_result(capabilities_result),
 			)
 		}
 		if !format_ok ||
@@ -1358,7 +1298,8 @@ gpu_init :: proc(
 		)
 	}
 	dctx.surface_format, _ = vulkan13_surface_format(formats)
-	if err := gpu_init_allocator(dctx); err.category != .None do return err
+	allocator_error := gpu_init_allocator(dctx)
+	if allocator_error.category != .None do return allocator_error
 	vulkan13_report_device(dctx)
 	return {}
 }
@@ -1981,12 +1922,13 @@ gpu_create_device :: proc(dctx: ^GPU_Context, req: Vulkan13_Requirements) -> Ren
 		ppEnabledExtensionNames = &device_extensions[0],
 	}
 	device: vk.Device
-	if res := vk.CreateDevice(dctx.physical, &device_create_info, nil, &device); res != .SUCCESS {
+	device_result := vk.CreateDevice(dctx.physical, &device_create_info, nil, &device)
+	if device_result != .SUCCESS {
 		return renderer_error(
 			.Device,
 			.Vulkan_Failure,
 			"logical device creation failed",
-			vk_result(res),
+			vk_result(device_result),
 		)
 	}
 	dctx.device = device
@@ -2063,12 +2005,13 @@ gpu_init_allocator :: proc(dctx: ^GPU_Context) -> Renderer_Error {
 		),
 	}
 	if dctx.capabilities.budget_known do allocator_create_info.flags += {.Ext_Memory_Budget}
-	if res := vma.create_allocator(allocator_create_info, &dctx.allocator); res != .SUCCESS {
+	allocator_result := vma.create_allocator(allocator_create_info, &dctx.allocator)
+	if allocator_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
 			.Vulkan_Failure,
 			"GPU resource initialization failed",
-			vk_result(res),
+			vk_result(allocator_result),
 		)
 	}
 	return {}
@@ -2237,18 +2180,20 @@ vulkan13_present :: proc(
 			r.stopped = true
 		}
 	}
-	if err := vulkan13_update_swapchain(r); err.category != .None do return err
+	swapchain_error := vulkan13_update_swapchain(r)
+	if swapchain_error.category != .None do return swapchain_error
 	if r.framebuffer_size.x == 0 || r.framebuffer_size.y == 0 do return {}
 	context.allocator = r.allocator
 
 	fctx := &r.frame_contexts[r.frame_index]
 
-	if res := vk.WaitForFences(r.gpu.device, 1, &fctx.fence, true, max(u64)); res != .SUCCESS {
+	fence_wait_result := vk.WaitForFences(r.gpu.device, 1, &fctx.fence, true, max(u64))
+	if fence_wait_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame fence wait failed",
-			vk_result(res),
+			vk_result(fence_wait_result),
 		)
 	}
 
@@ -2278,40 +2223,43 @@ vulkan13_present :: proc(
 
 	// Store updated shader data
 	mem.copy(fctx.shader_data_buffer.mapped, &fctx.shader_data, size_of(Quad_Shader_Data))
-	if res := vma.flush_allocation(
+	instance_flush_result := vma.flush_allocation(
 		r.gpu.allocator,
 		fctx.shader_data_buffer.alloc,
 		0,
 		size_of(Quad_Shader_Data),
-	); res != .SUCCESS {
+	)
+	if instance_flush_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"instance buffer flush failed",
-			vk_result(res),
+			vk_result(instance_flush_result),
 		)
 	}
 
 	// Record command buffer
 	cb := fctx.command_buffer
-	if res := vk.ResetCommandBuffer(cb, {}); res != .SUCCESS {
+	command_reset_result := vk.ResetCommandBuffer(cb, {})
+	if command_reset_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command reset failed",
-			vk_result(res),
+			vk_result(command_reset_result),
 		)
 	}
 	cb_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
 	}
-	if res := vk.BeginCommandBuffer(cb, &cb_begin_info); res != .SUCCESS {
+	command_begin_result := vk.BeginCommandBuffer(cb, &cb_begin_info)
+	if command_begin_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command begin failed",
-			vk_result(res),
+			vk_result(command_begin_result),
 		)
 	}
 	output_barriers := []vk.ImageMemoryBarrier2 {
@@ -2413,12 +2361,13 @@ vulkan13_present :: proc(
 		pImageMemoryBarriers    = &barrier_present,
 	}
 	vk.CmdPipelineBarrier2(cb, &barrier_present_dep_info)
-	if res := vk.EndCommandBuffer(cb); res != .SUCCESS {
+	command_end_result := vk.EndCommandBuffer(cb)
+	if command_end_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command end failed",
-			vk_result(res),
+			vk_result(command_end_result),
 		)
 	}
 	// Submit command buffer
@@ -2433,20 +2382,22 @@ vulkan13_present :: proc(
 		signalSemaphoreCount = 1,
 		pSignalSemaphores    = &r.swapchain.render_semaphores[image_index],
 	}
-	if res := vk.ResetFences(r.gpu.device, 1, &fctx.fence); res != .SUCCESS {
+	fence_reset_result := vk.ResetFences(r.gpu.device, 1, &fctx.fence)
+	if fence_reset_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame fence reset failed",
-			vk_result(res),
+			vk_result(fence_reset_result),
 		)
 	}
-	if res := vk.QueueSubmit(r.gpu.queue, 1, &submit_info, fctx.fence); res != .SUCCESS {
+	submit_result := vk.QueueSubmit(r.gpu.queue, 1, &submit_info, fctx.fence)
+	if submit_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame submission failed; renderer stopped",
-			vk_result(res),
+			vk_result(submit_result),
 		)
 	}
 
@@ -2461,7 +2412,10 @@ vulkan13_present :: proc(
 	}
 	res = vk.QueuePresentKHR(r.gpu.present_queue, &present_info)
 	if res == .ERROR_OUT_OF_DATE_KHR ||
-	   res == .SUBOPTIMAL_KHR {r.swapchain.needs_update = true; return {}}
+	   res == .SUBOPTIMAL_KHR {
+		r.swapchain.needs_update = true
+		return {}
+	}
 	if res != .SUCCESS {
 		return renderer_error(
 			.Presentation,
@@ -2473,18 +2427,204 @@ vulkan13_present :: proc(
 	return {}
 }
 
+vulkan13_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
+	if r == nil {
+		return false
+	}
+	if .TRANSFER_SRC not_in r.swapchain.create_info.imageUsage do return false
+	image_count := len(r.swapchain.images)
+	if image_count <= 0 {
+		log.error("vulkan13 debug capture failed: no swapchain images")
+		return false
+	}
+	width := int(r.swapchain.create_info.imageExtent.width)
+	height := int(r.swapchain.create_info.imageExtent.height)
+	if width <= 0 || height <= 0 {
+		log.errorf("vulkan13 debug capture invalid extent: %dx%d", width, height)
+		return false
+	}
+	bytes_needed := width * height * 4
+
+	if vk.DeviceWaitIdle(r.gpu.device) != .SUCCESS {
+		log.error("vulkan13 debug capture: vkDeviceWaitIdle failed")
+		return false
+	}
+
+	staging_buf_info := vk.BufferCreateInfo {
+		sType       = .BUFFER_CREATE_INFO,
+		size        = vk.DeviceSize(bytes_needed),
+		usage       = {.TRANSFER_DST},
+		sharingMode = .EXCLUSIVE,
+	}
+	staging_alloc_info := vma.Allocation_Create_Info {
+		usage = .Gpu_To_Cpu,
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+	}
+	staging_buf: vk.Buffer
+	staging_alloc: vma.Allocation
+	vma_info: vma.Allocation_Info
+	if vma.create_buffer(
+		   r.gpu.allocator,
+		   staging_buf_info,
+		   staging_alloc_info,
+		   &staging_buf,
+		   &staging_alloc,
+		   &vma_info,
+	   ) !=
+	   .SUCCESS {
+		log.error("vulkan13 debug capture failed: could not create staging buffer")
+		return false
+	}
+	defer vma.destroy_buffer(r.gpu.allocator, staging_buf, staging_alloc)
+
+	if vma_info.mapped_data == nil {
+		log.error("vulkan13 debug capture failed: staging buffer not mapped")
+		return false
+	}
+	mapped_rgba := ([^]u8)(vma_info.mapped_data)[:bytes_needed]
+	best_rgba := make([]u8, bytes_needed)
+	best_score := -1
+
+	vk_assert_local := proc(res: vk.Result) -> bool {
+		if res == .SUCCESS {
+			return true
+		}
+		log.errorf("vulkan13 debug capture vk call failed: %v", res)
+		return false
+	}
+
+	for i in 0 ..< image_count {
+		cmd: vk.CommandBuffer
+		cmd_alloc := vk.CommandBufferAllocateInfo {
+			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+			commandPool        = r.command_pool,
+			commandBufferCount = 1,
+		}
+		if !vk_assert_local(vk.AllocateCommandBuffers(r.gpu.device, &cmd_alloc, &cmd)) {
+			return false
+		}
+		fence: vk.Fence
+		fence_info := vk.FenceCreateInfo {
+			sType = .FENCE_CREATE_INFO,
+		}
+		if !vk_assert_local(vk.CreateFence(r.gpu.device, &fence_info, nil, &fence)) {
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+			return false
+		}
+		begin_info := vk.CommandBufferBeginInfo {
+			sType = .COMMAND_BUFFER_BEGIN_INFO,
+			flags = {.ONE_TIME_SUBMIT},
+		}
+		if !vk_assert_local(vk.BeginCommandBuffer(cmd, &begin_info)) {
+			vk.DestroyFence(r.gpu.device, fence, nil)
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+			return false
+		}
+		to_transfer := vk.ImageMemoryBarrier2 {
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.TOP_OF_PIPE},
+			dstStageMask = {.TRANSFER},
+			dstAccessMask = {.TRANSFER_READ},
+			oldLayout = .PRESENT_SRC_KHR,
+			newLayout = .TRANSFER_SRC_OPTIMAL,
+			image = r.swapchain.images[i],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+		dep_a := vk.DependencyInfo {
+			sType                   = .DEPENDENCY_INFO,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers    = &to_transfer,
+		}
+		vk.CmdPipelineBarrier2(cmd, &dep_a)
+		copy_region := vk.BufferImageCopy {
+			imageSubresource = {
+				aspectMask = {.COLOR},
+				mipLevel = 0,
+				baseArrayLayer = 0,
+				layerCount = 1,
+			},
+			imageExtent = {width = u32(width), height = u32(height), depth = 1},
+		}
+		vk.CmdCopyImageToBuffer(
+			cmd,
+			r.swapchain.images[i],
+			.TRANSFER_SRC_OPTIMAL,
+			staging_buf,
+			1,
+			&copy_region,
+		)
+		to_present := vk.ImageMemoryBarrier2 {
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.TRANSFER},
+			srcAccessMask = {.TRANSFER_READ},
+			dstStageMask = {.TOP_OF_PIPE},
+			oldLayout = .TRANSFER_SRC_OPTIMAL,
+			newLayout = .PRESENT_SRC_KHR,
+			image = r.swapchain.images[i],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+		dep_b := vk.DependencyInfo {
+			sType                   = .DEPENDENCY_INFO,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers    = &to_present,
+		}
+		vk.CmdPipelineBarrier2(cmd, &dep_b)
+		if !vk_assert_local(vk.EndCommandBuffer(cmd)) {
+			vk.DestroyFence(r.gpu.device, fence, nil)
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+			return false
+		}
+		submit := vk.SubmitInfo {
+			sType              = .SUBMIT_INFO,
+			commandBufferCount = 1,
+			pCommandBuffers    = &cmd,
+		}
+		if !vk_assert_local(vk.QueueSubmit(r.gpu.queue, 1, &submit, fence)) {
+			vk.DestroyFence(r.gpu.device, fence, nil)
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+			return false
+		}
+		if !vk_assert_local(vk.WaitForFences(r.gpu.device, 1, &fence, true, max(u64))) {
+			vk.DestroyFence(r.gpu.device, fence, nil)
+			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+			return false
+		}
+		vk.DestroyFence(r.gpu.device, fence, nil)
+		vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &cmd)
+
+		score := 0
+		for pi in 0 ..< bytes_needed {
+			if pi % 4 != 0 {
+				continue
+			}
+			if mapped_rgba[pi + 0] != 0 || mapped_rgba[pi + 1] != 0 || mapped_rgba[pi + 2] != 0 {
+				score += 1
+			}
+		}
+		if score > best_score {
+			best_score = score
+			copy(best_rgba, mapped_rgba)
+		}
+	}
+
+	bgra :=
+		r.swapchain.create_info.imageFormat == .B8G8R8A8_UNORM ||
+		r.swapchain.create_info.imageFormat == .B8G8R8A8_SRGB
+	return renderer_capture_write_ppm(
+		path,
+		best_rgba,
+		width,
+		height,
+		bgra_order = bgra,
+		flip_y = false,
+	)
+}
+
 vulkan13_window_resize :: proc(r: ^Renderer, width, height: i32) {
 	if r.window.width == width && r.window.height == height do return
 	r.window.width = width
 	r.window.height = height
 	r.window.projection = vk_ortho_projection(0, f32(max(1, width)), 0, f32(max(1, height)), -1, 1)
-}
-
-FULL_UV :: Rect {
-	x = 0,
-	y = 0,
-	w = 1,
-	h = 1,
 }
 
 vulkan13_draw_image :: proc(
@@ -2973,14 +3113,6 @@ Texture :: struct {
 	height: int,
 }
 
-Texture_Handle :: struct {
-	idx: int,
-}
-
-Texture_Metrics :: struct {
-	width, height: int,
-}
-
 Texture_Color_Space :: enum {
 	SRGB,
 	Linear,
@@ -3031,7 +3163,8 @@ vulkan13_texture_load :: proc(
 	}
 
 	sampler: vk.Sampler
-	if real_sampler, ok := optional_sampler.?; ok {
+	real_sampler, has_sampler := optional_sampler.?
+	if has_sampler {
 		sampler = real_sampler
 		if sampler == {} {
 			return {
@@ -3050,12 +3183,14 @@ vulkan13_texture_load :: proc(
 		texture_format = .R8G8B8A8_UNORM
 	}
 	// External sampler handles have no queryable filter state; require linear support.
-	if err := vulkan13_check_texture_format(r.gpu.physical, texture_format, u32(width), u32(height), sampler != r.resources.tex_sampler); err.category != .None do return {idx = -1}, err
+	format_error := vulkan13_check_texture_format(r.gpu.physical, texture_format, u32(width), u32(height), sampler != r.resources.tex_sampler)
+	if format_error.category != .None do return {idx = -1}, format_error
 	vulkan13_refresh_memory(&r.gpu)
-	if res := vk.DeviceWaitIdle(r.gpu.device); res != .SUCCESS {
+	reader_wait_result := vk.DeviceWaitIdle(r.gpu.device)
+	if reader_wait_result != .SUCCESS {
 		return {
 			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "waiting for shared resource readers failed", vk_result(res))
+		}, renderer_error(.Resources, .Vulkan_Failure, "waiting for shared resource readers failed", vk_result(reader_wait_result))
 	}
 
 	tex, create_res := vk_create_texture(
@@ -3081,14 +3216,15 @@ vulkan13_texture_load :: proc(
 
 	// copy image to the staging buffer
 	tex_staging_buffer_ptr: rawptr
-	if res := vma.map_memory(
+	staging_map_result := vma.map_memory(
 		r.gpu.allocator,
 		r.resources.tex_staging_alloc,
 		&tex_staging_buffer_ptr,
-	); res != .SUCCESS {
+	)
+	if staging_map_result != .SUCCESS {
 		return {
 			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "texture staging map failed", vk_result(res))
+		}, renderer_error(.Resources, .Vulkan_Failure, "texture staging map failed", vk_result(staging_map_result))
 	}
 	defer vma.unmap_memory(r.gpu.allocator, r.resources.tex_staging_alloc)
 	if tex_staging_buffer_ptr == nil {
@@ -3127,15 +3263,16 @@ vulkan13_texture_load :: proc(
 					p.b = u8(srgb_color.b * 255 + 0.5)
 				}
 			}
-			if res := vma.flush_allocation(
+			staging_flush_result := vma.flush_allocation(
 				r.gpu.allocator,
 				r.resources.tex_staging_alloc,
 				0,
 				vk.DeviceSize(data_size),
-			); res != .SUCCESS {
+			)
+			if staging_flush_result != .SUCCESS {
 				return {
 					idx = -1,
-				}, renderer_error(.Resources, .Vulkan_Failure, "texture staging flush failed", vk_result(res))
+				}, renderer_error(.Resources, .Vulkan_Failure, "texture staging flush failed", vk_result(staging_flush_result))
 			}
 
 			one_time_cb, begin_res := vk_one_time_cmd_buffer_begin(
@@ -3214,14 +3351,15 @@ vulkan13_texture_load :: proc(
 				}
 				if y + rows == height && x + columns == width do vk.CmdPipelineBarrier2(one_time_cb.cmd, &gpu_to_frag_barrier)
 			}
-			if res := vk_one_time_cmd_buffer_end(&one_time_cb); res != .SUCCESS {
+			upload_result := vk_one_time_cmd_buffer_end(&one_time_cb)
+			if upload_result != .SUCCESS {
 				if one_time_cb.cmd != {} {
 					r.pending_upload, r.pending_texture = one_time_cb, tex
 					r.stopped = true
 				}
 				return {
 					idx = -1,
-				}, renderer_error(.Resources, .Vulkan_Failure, "texture upload failed", vk_result(res))
+				}, renderer_error(.Resources, .Vulkan_Failure, "texture upload failed", vk_result(upload_result))
 			}
 		}
 	}
@@ -3381,7 +3519,8 @@ vulkan13_font_load :: proc(
 	err: Font_Atlas_Error,
 ) {
 	defer {
-		if gpu_err, ok := err.(Renderer_Error); ok && gpu_err.category == .Device_Lost {
+		gpu_err, is_gpu_error := err.(Renderer_Error)
+		if is_gpu_error && gpu_err.category == .Device_Lost {
 			r.stopped = true
 		}
 	}
@@ -3561,15 +3700,16 @@ vulkan13_font_load :: proc(
 
 	data_size := size_of(Quad_Font)
 	mem.copy(r.resources.font_staging_buf_ptr, &quad_font, data_size)
-	if res := vma.flush_allocation(
+	font_flush_result := vma.flush_allocation(
 		r.gpu.allocator,
 		r.resources.font_staging_alloc,
 		0,
 		vk.DeviceSize(data_size),
-	); res != .SUCCESS {
+	)
+	if font_flush_result != .SUCCESS {
 		return {
 			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "font staging flush failed", vk_result(res))
+		}, renderer_error(.Resources, .Vulkan_Failure, "font staging flush failed", vk_result(font_flush_result))
 	}
 	one_time_cb, begin_res := vk_one_time_cmd_buffer_begin(
 		r.gpu.device,
@@ -3612,14 +3752,15 @@ vulkan13_font_load :: proc(
 		}
 		vk.CmdPipelineBarrier2(one_time_cb.cmd, &dep_info)
 	}
-	if res := vk_one_time_cmd_buffer_end(&one_time_cb); res != .SUCCESS {
+	upload_result := vk_one_time_cmd_buffer_end(&one_time_cb)
+	if upload_result != .SUCCESS {
 		if one_time_cb.cmd != {} {
 			r.pending_upload = one_time_cb
 			r.stopped = true
 		}
 		return {
 			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "font upload failed", vk_result(res))
+		}, renderer_error(.Resources, .Vulkan_Failure, "font upload failed", vk_result(upload_result))
 	}
 	append(&r.resources.font_faces, face)
 	append(&r.resources.quad_fonts, quad_font)
@@ -3653,10 +3794,6 @@ Font_Face_Glyph :: struct {
 	x_advance: f32,
 }
 
-Font_Face_Handle :: struct {
-	idx: int,
-}
-
 font_face_get_glyph :: proc(
 	r: ^Renderer,
 	handle: Font_Face_Handle,
@@ -3687,52 +3824,6 @@ font_face_destroy :: proc(face: ^Font_Face, allocator := context.allocator) {
 }
 
 @(private)
-vulkan_lib: dynlib.Library
-
-renderer_loader_init :: proc() -> bool {
-	libs: []string
-	when ODIN_OS == .Windows {
-		libs = []string{"vulkan-1.dll"}
-	} else when ODIN_OS == .Linux {
-		libs = []string{"libvulkan.so.1", "libvulkan.so"}
-	} else {
-		return false
-	}
-
-	for name in libs {
-		lib, ok := dynlib.load_library(name)
-		if !ok do continue
-
-		sym, found := dynlib.symbol_address(lib, "vkGetInstanceProcAddr")
-		if !found {
-			dynlib.unload_library(lib)
-			continue
-		}
-
-		vulkan_lib = lib
-		get_instance_proc_address: vk.ProcGetInstanceProcAddr = auto_cast sym
-		vk.load_proc_addresses((rawptr)(get_instance_proc_address))
-		if vk.CreateInstance == nil ||
-		   vk.EnumerateInstanceExtensionProperties == nil ||
-		   vk.EnumerateInstanceLayerProperties == nil {
-			dynlib.unload_library(lib)
-			vulkan_lib = {}
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-renderer_loader_shutdown :: proc() {
-	dynlib.unload_library(vulkan_lib)
-	vulkan_lib = {}
-}
-
-@(private)
-active_renderer: ^Renderer
-
-@(private)
 vulkan13_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 	size, platform_err := r.platform.get_framebuffer_size(r.platform.user_data)
 	if platform_err.message != "" || platform_err.result != .SUCCESS {
@@ -3756,22 +3847,23 @@ vulkan13_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 	}
 	if size.x == 0 || size.y == 0 do return {}
 	if r.swapchain.handle != {} && !r.swapchain.needs_update do return {}
-	if res := vk.DeviceWaitIdle(r.gpu.device); res != .SUCCESS {
+	idle_result := vk.DeviceWaitIdle(r.gpu.device)
+	if idle_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"waiting for swapchain work failed",
-			vk_result(res),
+			vk_result(idle_result),
 		)
 	}
 	caps: vk.SurfaceCapabilitiesKHR
-	if res := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps);
-	   res != .SUCCESS {
+	capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps)
+	if capabilities_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
-			.Surface_Lost if res == .ERROR_SURFACE_LOST_KHR else .Vulkan_Failure,
+			.Surface_Lost if capabilities_result == .ERROR_SURFACE_LOST_KHR else .Vulkan_Failure,
 			"surface capabilities query failed",
-			vk_result(res),
+			vk_result(capabilities_result),
 		)
 	}
 	if caps.currentExtent.width == 0 || caps.currentExtent.height == 0 {
@@ -3827,7 +3919,8 @@ vulkan13_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 		r.pipeline, r.pipeline_layout = pipeline, layout
 	}
 	r.gpu.surface_format = format
-	if err := swapchain_context_init(&r.swapchain, &r.gpu, r.surface, caps, i32(size.x), i32(size.y), recreate = r.swapchain.handle != {}, allocator = r.allocator); err.category != .None do return err
+	swapchain_error := swapchain_context_init(&r.swapchain, &r.gpu, r.surface, caps, i32(size.x), i32(size.y), recreate = r.swapchain.handle != {}, allocator = r.allocator)
+	if swapchain_error.category != .None do return swapchain_error
 	r.swapchain.needs_update = false
 	return {}
 }

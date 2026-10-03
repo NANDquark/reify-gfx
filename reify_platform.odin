@@ -58,7 +58,9 @@ Negotiated_Limits :: struct {
 
 effective_limits :: proc(r: ^Renderer) -> Negotiated_Limits {
 	if r == nil || !r.initialized do return {}
-	return r.gpu.limits
+	when RENDERER_BACKEND == "vulkan13" {
+		return r.backend.gpu.limits
+	}
 }
 
 Memory_Heap_Summary :: struct {
@@ -74,8 +76,10 @@ Memory_Summary :: struct {
 // Budget telemetry is advisory; allocator_bytes includes allocator block overhead.
 memory_summary :: proc(r: ^Renderer) -> Memory_Summary {
 	if r == nil || !r.initialized do return {}
-	vulkan13_refresh_memory(&r.gpu)
-	return vulkan13_memory_summary(&r.gpu)
+	when RENDERER_BACKEND == "vulkan13" {
+		vulkan13_refresh_memory(&r.backend.gpu)
+		return vulkan13_memory_summary(&r.backend.gpu)
+	}
 }
 
 @(private)

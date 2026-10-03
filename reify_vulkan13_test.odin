@@ -6,6 +6,42 @@ import "core:testing"
 import vk "vendor:vulkan"
 
 @(test)
+vulkan13_cleanup_preserves_facade :: proc(t: ^testing.T) {
+	r := new(Renderer)
+	defer free(r)
+	r.allocator = context.allocator
+	r.platform.user_data = r
+	r.initialized = true
+	r.loader_owned = true
+	r.stopped = true
+	r.frame_started = true
+	r.frame_failed = true
+	r.window.width, r.window.height = 800, 600
+	r.framebuffer_size = {1600, 1200}
+	r.perf.draw_calls = 7
+	r.backend.frame_index = 2
+	r.backend.gpu.limits.instances = 42
+	r.backend.swapchain.needs_update = true
+	allocator := r.allocator
+
+	testing.expect(t, &r.gpu == &r.backend.gpu)
+	vulkan13_destroy(r)
+
+	testing.expect(t, r.initialized && r.loader_owned && r.stopped)
+	testing.expect(t, r.frame_started && r.frame_failed)
+	testing.expect(t, r.allocator.procedure == allocator.procedure)
+	testing.expect(t, r.allocator.data == allocator.data)
+	testing.expect(t, r.platform.user_data == r)
+	testing.expect_value(t, r.window.width, i32(800))
+	testing.expect_value(t, r.window.height, i32(600))
+	testing.expect_value(t, r.framebuffer_size, [2]int{1600, 1200})
+	testing.expect_value(t, r.perf.draw_calls, 7)
+	testing.expect_value(t, r.backend.frame_index, 0)
+	testing.expect_value(t, r.backend.gpu.limits.instances, u32(0))
+	testing.expect(t, !r.backend.swapchain.needs_update)
+}
+
+@(test)
 vulkan13_requirement_fixtures :: proc(t: ^testing.T) {
 	req := vulkan13_requirements()
 	good := vulkan13_capability_fixture()

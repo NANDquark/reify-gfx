@@ -2,7 +2,33 @@
 
 ## Status
 
-`todo` — Implementation has not started.
+`in-progress` — The initial Renderer/state split is implemented as a separate
+checkpoint, before Vulkan 1.1 backend work. `Renderer` and common lifecycle
+ownership live in `reify.odin`; Vulkan 1.3 GPU state is isolated in
+`Vulkan13_Renderer_State`. The public value/handle types are moved to the facade,
+and Vulkan 1.3 capture remains backend-owned. The compatibility backend,
+shader/tooling, remaining neutral-code extraction, and parity validation are
+not implemented yet. Checkpoint verification is recorded below.
+
+### Separate initial checkpoint: Renderer/state split
+
+This checkpoint preserves the Vulkan 1.3 backend and does not add `vulkan11`
+selection. The facade owns loader lifetime, the active-renderer reservation,
+initialization flags, failure cleanup dispatch, and the final public reset.
+Backend cleanup releases its GPU state without resetting common ownership.
+The build-selected state is embedded through a compile-time alias; Odin `using`
+promotion preserves existing backend field access without introducing a
+procedure table or shared Vulkan orchestration layer. Drawing, resource upload,
+font layout, batching, and submission remain in the Vulkan 1.3 implementation.
+
+Checkpoint verification: core package, GLFW demo, and SDL example compile
+checks pass; all 15 package tests and all 31 tests with the opt-in integration
+suite pass. The integration suite also passes with synchronization validation
+enabled and no reported validation errors on the available Linux/NVIDIA GTX 1070
+configuration. Tests cover backend-only cleanup, preflight state preservation,
+initialization rollback, repeated lifetimes, resize/minimize, uploads, and
+resource/submission failures. Windows and other GPUs are not verified by this
+checkpoint. A clean adversarial review is required before checkpoint delivery.
 
 Implementation stage 3, after [02-vulkan13-robustness.md](02-vulkan13-robustness.md).
 See [00-roadmap.md](00-roadmap.md) for shared decisions and gates.
@@ -60,18 +86,37 @@ The relevant starting points are `reify.odin` (config and dispatch),
    Include the internal loader lifecycle,
    instance access, surface setup, resource loading, metrics, frame submission,
    resize, vsync, logging, and destruction.
-2. Add `reify_vulkan11.odin` with a dedicated `Vulkan11_Renderer_State`, held by
-   `Renderer`. Keep compatibility frame, swapchain, descriptor, and pipeline state
-   separate from the Vulkan 1.3 state. Reuse public handle/value types.
-3. Share only backend-neutral logic where useful: shape generation, instance
-   records, font parsing/layout, and image decoding. Several such definitions
-   currently live in `reify_vulkan13.odin`; move them deliberately rather than
-   calling Vulkan 1.3 initialization or drawing routines from the new backend.
+2. Move the public `Renderer` declaration into `reify.odin`. Keep common
+   allocator/platform ownership, lifecycle flags, logical dimensions, and
+   performance statistics there. Extract the Vulkan instance/device/queue context,
+   backend capabilities and limits, VMA allocator, surface handle, GPU resources,
+   swapchain, frame contexts/index, descriptors, pipelines, command pool, shader
+   module, and pending-upload state into `Vulkan13_Renderer_State` in
+   `reify_vulkan13.odin`; add an independent `Vulkan11_Renderer_State` in
+   `reify_vulkan11.odin`. Initially embed only the build-selected backend state;
+   stage 4 introduces tagged runtime state. Reuse public handle/value types.
+3. Keep the interface small: the existing public API and explicit backend dispatch
+   are the facade. Do not introduce a general graphics abstraction, procedure
+   table, or shared Vulkan orchestration layer. Almost entirely parallel Vulkan
+   1.1 functions are acceptable when they make feature use and ownership clearer.
+   Share only demonstrably backend-neutral logic where useful: pure shape
+   generation, instance records, color conversion, font parsing/layout, and image
+   decoding. Several such definitions currently live in `reify_vulkan13.odin`;
+   move them deliberately into cohesive shared slices, not merely to avoid
+   duplication. Shared font layout should consume font data rather than reach
+   through backend resource state. Keep batching, chunk indexing, uploads, and
+   submission backend-owned; do not call Vulkan 1.3 initialization or drawing
+   routines from the new backend.
 4. Audit helpers before reuse. In particular, the current pipeline helper uses
    `VkPipelineRenderingCreateInfo`, and upload helpers/capture paths may assume
    modern barriers. Add compatibility-specific implementations where needed.
 5. Audit demo and platform integration for assumptions that a Vulkan backend is
    specifically named `vulkan13`. Keep unrelated platform changes out of scope.
+6. Establish a single common lifecycle owner for loader reservation, public
+   lifecycle flags, and partial-initialization cleanup dispatch. Each backend
+   cleans up and clears its own state; the facade resets the public renderer
+   after backend cleanup. Preserve the one-active-renderer rule and surface
+   destruction contract without duplicating ownership between the two backends.
 
 ## Device and surface initialization
 
