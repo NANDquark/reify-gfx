@@ -13,25 +13,24 @@ import "lib/vma"
 import vk "vendor:vulkan"
 
 
-when RENDERER_BACKEND == "vulkan11" {
-
-SHADER_BYTES :: #load("assets/quad_vulkan11.spv")
-MAX_FRAME_IN_FLIGHT :: 3
-FONT_MAX_COUNT :: 128
-TEX_STAGING_BUFFER_SIZE :: 4 * mem.Megabyte
-TEXTURE_MAX_COUNT :: 1024
-DESC_BINDING_FONTS :: 1
-ENABLE_VK_VALIDATION :: bool(#config(Reify_Enable_Validation, false))
+VULKAN11_SHADER_BYTES :: #load("assets/quad_vulkan11.spv")
+VULKAN11_MAX_FRAME_IN_FLIGHT :: 3
+VULKAN11_FONT_MAX_COUNT :: 128
+VULKAN11_TEX_STAGING_BUFFER_SIZE :: 4 * mem.Megabyte
+VULKAN11_TEXTURE_MAX_COUNT :: 1024
+VULKAN11_DESC_BINDING_FONTS :: 1
+VULKAN11_ENABLE_VK_VALIDATION :: bool(#config(Reify_Enable_Validation, false))
 VULKAN11_CHUNK_INSTANCES :: u32(#config(Reify_Vulkan11_Chunk_Instances, QUAD_MAX_INSTANCES))
 #assert(VULKAN11_CHUNK_INSTANCES > 0)
 
-Vulkan11_Renderer_State :: struct {
-	pending_upload:   One_Time_Cmd_Buffer,
-	pending_texture:  Texture,
-	gpu:              GPU_Context,
-	surface:          vk.SurfaceKHR,
-	swapchain:        Swapchain_Context,
-	resources:        struct {
+Vulkan11_Renderer :: struct {
+	using _:         Renderer,
+	pending_upload:  One_Time_Cmd_Buffer,
+	pending_texture: Texture,
+	gpu:             Vulkan11_GPU_Context,
+	surface:         vk.SurfaceKHR,
+	swapchain:       Vulkan11_Swapchain_Context,
+	resources:       struct {
 		textures:             [dynamic]Texture, // TODO: convert to handle_map to support removals
 		texture_sets:         [dynamic]vk.DescriptorSet,
 		texture_set_pools:    [dynamic]vk.DescriptorPool,
@@ -54,18 +53,45 @@ Vulkan11_Renderer_State :: struct {
 		tex_sampler:          vk.Sampler,
 		msdf_sampler:         vk.Sampler,
 	},
-	pipeline:         vk.Pipeline,
-	pipeline_layout:  vk.PipelineLayout,
-	command_pool:     vk.CommandPool,
-	shader_module:    vk.ShaderModule,
-	render_pass:      vk.RenderPass,
-	chunk_instances:  int,
-	chunk_stride:     vk.DeviceSize,
-	frame_index:      int,
-	frame_contexts:   [MAX_FRAME_IN_FLIGHT]Frame_Context,
+	pipeline:        vk.Pipeline,
+	pipeline_layout: vk.PipelineLayout,
+	command_pool:    vk.CommandPool,
+	shader_module:   vk.ShaderModule,
+	render_pass:     vk.RenderPass,
+	chunk_instances: int,
+	chunk_stride:    vk.DeviceSize,
+	frame_index:     int,
+	frame_contexts:  [VULKAN11_MAX_FRAME_IN_FLIGHT]Vulkan11_Frame_Context,
 }
 
-GPU_Context :: struct {
+VULKAN11_RENDERER_BACKEND :: Renderer_Backend_Interface {
+	init                = vulkan11_init,
+	destroy             = vulkan11_destroy,
+	set_vsync           = vulkan11_set_vsync,
+	start               = vulkan11_start,
+	begin_screen_mode   = vulkan11_begin_screen_mode,
+	end_screen_mode     = vulkan11_end_screen_mode,
+	present             = vulkan11_present,
+	window_resize       = vulkan11_window_resize,
+	font_load           = vulkan11_font_load,
+	texture_load        = vulkan11_texture_load,
+	texture_get_metrics = vulkan11_texture_get_metrics,
+	measure_text        = vulkan11_measure_text,
+	set_scissor         = vulkan11_set_scissor,
+	clear_scissor       = vulkan11_clear_scissor,
+	draw_rect           = vulkan11_draw_rect,
+	draw_triangle       = vulkan11_draw_triangle,
+	draw_circle         = vulkan11_draw_circle,
+	draw_line           = vulkan11_draw_line,
+	draw_text           = vulkan11_draw_text,
+	draw_fps            = vulkan11_draw_fps,
+	draw_image          = vulkan11_draw_image,
+	effective_limits    = vulkan11_effective_limits,
+	memory_summary      = vulkan11_renderer_memory_summary,
+	debug_capture_ppm   = vulkan11_debug_capture_ppm,
+}
+
+Vulkan11_GPU_Context :: struct {
 	allocator:                   vma.Allocator,
 	instance:                    vk.Instance,
 	physical:                    vk.PhysicalDevice,
@@ -74,15 +100,15 @@ GPU_Context :: struct {
 	queue_family:                u32,
 	present_family:              u32,
 	present_queue:               vk.Queue,
-	capabilities:                Device_Capabilities,
+	capabilities:                Vulkan11_Device_Capabilities,
 	limits:                      Negotiated_Limits,
 	surface_format:              vk.SurfaceFormatKHR,
 	allocator_bytes:             [vk.MAX_MEMORY_HEAPS]u64,
 	initial_allocation_estimate: u64,
 }
 
-Swapchain_Context :: struct {
-	gpu:               ^GPU_Context,
+Vulkan11_Swapchain_Context :: struct {
+	gpu:               ^Vulkan11_GPU_Context,
 	vsync_enabled:     bool,
 	create_info:       vk.SwapchainCreateInfoKHR,
 	handle:            vk.SwapchainKHR,
@@ -93,27 +119,27 @@ Swapchain_Context :: struct {
 	needs_update:      bool,
 }
 
-Frame_Context :: struct {
+Vulkan11_Frame_Context :: struct {
 	fence:                  vk.Fence,
 	present_semaphore:      vk.Semaphore,
 	command_buffer:         vk.CommandBuffer,
 	shader_data:            Quad_Shader_Data,
-	shader_data_buffer:     Shader_Data_Buffer,
+	shader_data_buffer:     Vulkan11_Shader_Data_Buffer,
 	desc_set:               vk.DescriptorSet,
 	projection_type:        Projection_Type,
 	world_projection_view:  Mat4f,
 	screen_projection_view: Mat4f,
 	total_instances:        int,
-	draw_batches:           [dynamic]Draw_Batch,
+	draw_batches:           [dynamic]Vulkan11_Draw_Batch,
 }
 
-Shader_Data_Buffer :: struct {
-	alloc:       vma.Allocation,
-	buffer:      vk.Buffer,
-	mapped:      rawptr,
+Vulkan11_Shader_Data_Buffer :: struct {
+	alloc:  vma.Allocation,
+	buffer: vk.Buffer,
+	mapped: rawptr,
 }
 
-Draw_Batch :: struct {
+Vulkan11_Draw_Batch :: struct {
 	scissor:         vk.Rect2D,
 	index_offset:    int,
 	num_instances:   int,
@@ -122,11 +148,9 @@ Draw_Batch :: struct {
 }
 
 
-
-@(private)
-vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_Error) {
+vulkan11_init :: proc(r: ^Vulkan11_Renderer, info: Renderer_Init_Info) -> (err: Renderer_Error) {
 	p := info.platform
-	gpu_error := gpu_init(r, p.vulkan.required_instance_extensions)
+	gpu_error := vulkan11_gpu_init(r, p.vulkan.required_instance_extensions)
 	if gpu_error.category != .None do return gpu_error
 	framebuffer, framebuffer_err := r.platform.get_framebuffer_size(r.platform.user_data)
 	if framebuffer_err.message != "" || framebuffer_err.result != .SUCCESS {
@@ -148,13 +172,23 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		)
 	}
 	r.framebuffer_size = framebuffer
-	r.chunk_instances = int(min(r.gpu.limits.instances, r.gpu.capabilities.properties.limits.maxStorageBufferRange / u32(size_of(Quad_Instance)), VULKAN11_CHUNK_INSTANCES))
-	alignment := max(vk.DeviceSize(1), r.gpu.capabilities.properties.limits.minStorageBufferOffsetAlignment)
+	r.chunk_instances = int(
+		min(
+			r.gpu.limits.instances,
+			r.gpu.capabilities.properties.limits.maxStorageBufferRange /
+			u32(size_of(Quad_Instance)),
+			VULKAN11_CHUNK_INSTANCES,
+		),
+	)
+	alignment := max(
+		vk.DeviceSize(1),
+		r.gpu.capabilities.properties.limits.minStorageBufferOffsetAlignment,
+	)
 	chunk_bytes := vk.DeviceSize(r.chunk_instances * size_of(Quad_Instance))
 	r.chunk_stride = (chunk_bytes + alignment - 1) / alignment * alignment
 	r.gpu.initial_allocation_estimate = vulkan11_initial_allocation_estimate(r)
-	fmt.printf(
-		"Initial allocation estimate: %d bytes including fallback texture, descriptor allowance, swapchain pressure, and allocator/alignment allowance; not an allocation guarantee\n",
+	log.infof(
+		"Initial allocation estimate: %d bytes including fallback texture, descriptor allowance, swapchain pressure, and allocator/alignment allowance; not an allocation guarantee",
 		r.gpu.initial_allocation_estimate,
 	)
 	r.swapchain.vsync_enabled = info.config.vsync
@@ -213,7 +247,12 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		indices[i_offset + 4] = v_offset + 3
 		indices[i_offset + 5] = v_offset + 0
 	}
-	index_flush_result := vma.flush_allocation(r.gpu.allocator, r.resources.index_alloc, 0, index_buf_size)
+	index_flush_result := vma.flush_allocation(
+		r.gpu.allocator,
+		r.resources.index_alloc,
+		0,
+		index_buf_size,
+	)
 	if index_flush_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
@@ -278,7 +317,7 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	}
 
 	// CPU & GPU Sync
-	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
+	for i in 0 ..< VULKAN11_MAX_FRAME_IN_FLIGHT {
 		u_buffer_create_info := vk.BufferCreateInfo {
 			sType = .BUFFER_CREATE_INFO,
 			size  = r.chunk_stride * vk.DeviceSize((int(r.gpu.limits.instances) + r.chunk_instances - 1) / r.chunk_instances),
@@ -329,7 +368,7 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		sType = .FENCE_CREATE_INFO,
 		flags = {.SIGNALED},
 	}
-	for i in 0 ..< MAX_FRAME_IN_FLIGHT {
+	for i in 0 ..< VULKAN11_MAX_FRAME_IN_FLIGHT {
 		fence_result := vk.CreateFence(
 			r.gpu.device,
 			&fence_create_info,
@@ -366,7 +405,12 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		flags            = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = r.gpu.queue_family,
 	}
-	command_pool_result := vk.CreateCommandPool(r.gpu.device, &command_pool_create_info, nil, &r.command_pool)
+	command_pool_result := vk.CreateCommandPool(
+		r.gpu.device,
+		&command_pool_create_info,
+		nil,
+		&r.command_pool,
+	)
 	if command_pool_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
@@ -467,7 +511,7 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	// Textures globals
 	tex_staging_buffer_create_info := vk.BufferCreateInfo {
 		sType = .BUFFER_CREATE_INFO,
-		size  = vk.DeviceSize(TEX_STAGING_BUFFER_SIZE),
+		size  = vk.DeviceSize(VULKAN11_TEX_STAGING_BUFFER_SIZE),
 		usage = {.TRANSFER_SRC},
 	}
 	tex_staging_alloc_create_info := vma.Allocation_Create_Info {
@@ -477,7 +521,14 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	}
 	staging_res := vk.Result.ERROR_OUT_OF_DEVICE_MEMORY
 	for attempt in 0 ..< 4 {
-		staging_size := int(min(vk.DeviceSize(TEX_STAGING_BUFFER_SIZE), r.gpu.capabilities.properties11.maxMemoryAllocationSize)) >> u32(attempt * 2)
+		staging_size :=
+			int(
+				min(
+					vk.DeviceSize(VULKAN11_TEX_STAGING_BUFFER_SIZE),
+					r.gpu.capabilities.properties11.maxMemoryAllocationSize,
+				),
+			) >>
+			u32(attempt * 2)
 		if staging_size < size_of(Color) do break
 		tex_staging_buffer_create_info.size = vk.DeviceSize(staging_size)
 		staging_res = vma.create_buffer(
@@ -526,12 +577,12 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 		)
 	}
 	desc_pool_sizes := [?]vk.DescriptorPoolSize {
-		{type = .STORAGE_BUFFER_DYNAMIC, descriptorCount = MAX_FRAME_IN_FLIGHT},
-		{type = .STORAGE_BUFFER, descriptorCount = MAX_FRAME_IN_FLIGHT},
+		{type = .STORAGE_BUFFER_DYNAMIC, descriptorCount = VULKAN11_MAX_FRAME_IN_FLIGHT},
+		{type = .STORAGE_BUFFER, descriptorCount = VULKAN11_MAX_FRAME_IN_FLIGHT},
 	}
 	desc_pool_create_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		maxSets       = MAX_FRAME_IN_FLIGHT,
+		maxSets       = VULKAN11_MAX_FRAME_IN_FLIGHT,
 		poolSizeCount = len(desc_pool_sizes),
 		pPoolSizes    = raw_data(desc_pool_sizes[:]),
 	}
@@ -562,33 +613,71 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	for &frame in r.frame_contexts {
 		res := vk.AllocateDescriptorSets(r.gpu.device, &desc_set_alloc, &frame.desc_set)
 		if res != .SUCCESS {
-			return renderer_error(.Resources, .Vulkan_Failure, "frame descriptor allocation failed", vk_result(res))
+			return renderer_error(
+				.Resources,
+				.Vulkan_Failure,
+				"frame descriptor allocation failed",
+				vk_result(res),
+			)
 		}
 		instance_info := vk.DescriptorBufferInfo {
 			buffer = frame.shader_data_buffer.buffer,
-			range = vk.DeviceSize(r.chunk_instances * size_of(Quad_Instance)),
+			range  = vk.DeviceSize(r.chunk_instances * size_of(Quad_Instance)),
 		}
 		writes := [?]vk.WriteDescriptorSet {
-			{sType = .WRITE_DESCRIPTOR_SET, dstSet = frame.desc_set, dstBinding = 0, descriptorCount = 1, descriptorType = .STORAGE_BUFFER_DYNAMIC, pBufferInfo = &instance_info},
-			{sType = .WRITE_DESCRIPTOR_SET, dstSet = frame.desc_set, dstBinding = 1, descriptorCount = 1, descriptorType = .STORAGE_BUFFER, pBufferInfo = &font_info},
+			{
+				sType = .WRITE_DESCRIPTOR_SET,
+				dstSet = frame.desc_set,
+				dstBinding = 0,
+				descriptorCount = 1,
+				descriptorType = .STORAGE_BUFFER_DYNAMIC,
+				pBufferInfo = &instance_info,
+			},
+			{
+				sType = .WRITE_DESCRIPTOR_SET,
+				dstSet = frame.desc_set,
+				dstBinding = 1,
+				descriptorCount = 1,
+				descriptorType = .STORAGE_BUFFER,
+				pBufferInfo = &font_info,
+			},
 		}
 		vk.UpdateDescriptorSets(r.gpu.device, len(writes), &writes[0], 0, nil)
 	}
 	texture_binding := vk.DescriptorSetLayoutBinding {
-		binding = 0, descriptorType = .COMBINED_IMAGE_SAMPLER, descriptorCount = 1, stageFlags = {.FRAGMENT},
+		binding         = 0,
+		descriptorType  = .COMBINED_IMAGE_SAMPLER,
+		descriptorCount = 1,
+		stageFlags      = {.FRAGMENT},
 	}
 	texture_layout_info := vk.DescriptorSetLayoutCreateInfo {
-		sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO, bindingCount = 1, pBindings = &texture_binding,
+		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		bindingCount = 1,
+		pBindings    = &texture_binding,
 	}
-	texture_layout_result := vk.CreateDescriptorSetLayout(r.gpu.device, &texture_layout_info, nil, &r.resources.texture_layout)
+	texture_layout_result := vk.CreateDescriptorSetLayout(
+		r.gpu.device,
+		&texture_layout_info,
+		nil,
+		&r.resources.texture_layout,
+	)
 	if texture_layout_result != .SUCCESS {
-		return renderer_error(.Resources, .Vulkan_Failure, "texture descriptor layout creation failed", vk_result(texture_layout_result))
+		return renderer_error(
+			.Resources,
+			.Vulkan_Failure,
+			"texture descriptor layout creation failed",
+			vk_result(texture_layout_result),
+		)
 	}
 	// Slot zero supplies untextured batches.
-	_, fallback_error := vulkan11_texture_load(r, []Color{{255, 255, 255, 255}}, 1, 1)
-	if fallback_error.category != .None do return fallback_error
+	_, fallback_ok := vulkan11_texture_load(r, []Color{{255, 255, 255, 255}}, 1, 1)
+	if !fallback_ok do return r.last_error
 
-	shader_module_result := vk_shader_module_init(r.gpu.device, &r.shader_module, SHADER_BYTES)
+	shader_module_result := vk_shader_module_init(
+		r.gpu.device,
+		&r.shader_module,
+		VULKAN11_SHADER_BYTES,
+	)
 	if shader_module_result != .SUCCESS {
 		return renderer_error(
 			.Resources,
@@ -597,9 +686,18 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 			vk_result(shader_module_result),
 		)
 	}
-	render_pass_result := vulkan11_render_pass_create(r.gpu.device, r.gpu.surface_format.format, &r.render_pass)
+	render_pass_result := vulkan11_render_pass_create(
+		r.gpu.device,
+		r.gpu.surface_format.format,
+		&r.render_pass,
+	)
 	if render_pass_result != .SUCCESS {
-		return renderer_error(.Resources, .Vulkan_Failure, "render pass creation failed", vk_result(render_pass_result))
+		return renderer_error(
+			.Resources,
+			.Vulkan_Failure,
+			"render pass creation failed",
+			vk_result(render_pass_result),
+		)
 	}
 	pipeline_result := vulkan11_pipeline_create(r, r.render_pass, &r.pipeline_layout, &r.pipeline)
 	if pipeline_result != .SUCCESS {
@@ -613,7 +711,7 @@ vulkan11_init :: proc(r: ^Renderer, info: Renderer_Init_Info) -> (err: Renderer_
 	swapchain_error := vulkan11_update_swapchain(r)
 	if swapchain_error.category != .None do return swapchain_error
 	vulkan11_refresh_memory(&r.gpu)
-	fmt.printf("Effective staging capacity: %d bytes\n", r.gpu.limits.staging_bytes)
+	log.infof("Effective staging capacity: %d bytes", r.gpu.limits.staging_bytes)
 	return {}
 }
 
@@ -624,77 +722,164 @@ vulkan11_chunk_draw :: proc(first, remaining, capacity: int) -> (chunk, local, c
 	return
 }
 
-vulkan11_render_pass_create :: proc(device: vk.Device, format: vk.Format, out: ^vk.RenderPass) -> vk.Result {
+vulkan11_render_pass_create :: proc(
+	device: vk.Device,
+	format: vk.Format,
+	out: ^vk.RenderPass,
+) -> vk.Result {
 	attachment := vk.AttachmentDescription {
-		format = format, samples = {._1}, loadOp = .CLEAR, storeOp = .STORE,
-		stencilLoadOp = .DONT_CARE, stencilStoreOp = .DONT_CARE,
-		initialLayout = .UNDEFINED, finalLayout = .PRESENT_SRC_KHR,
+		format         = format,
+		samples        = {._1},
+		loadOp         = .CLEAR,
+		storeOp        = .STORE,
+		stencilLoadOp  = .DONT_CARE,
+		stencilStoreOp = .DONT_CARE,
+		initialLayout  = .UNDEFINED,
+		finalLayout    = .PRESENT_SRC_KHR,
 	}
-	color := vk.AttachmentReference{attachment = 0, layout = .COLOR_ATTACHMENT_OPTIMAL}
+	color := vk.AttachmentReference {
+		attachment = 0,
+		layout     = .COLOR_ATTACHMENT_OPTIMAL,
+	}
 	subpass := vk.SubpassDescription {
-		pipelineBindPoint = .GRAPHICS, colorAttachmentCount = 1, pColorAttachments = &color,
+		pipelineBindPoint    = .GRAPHICS,
+		colorAttachmentCount = 1,
+		pColorAttachments    = &color,
 	}
 	dependencies := [?]vk.SubpassDependency {
 		{
-			srcSubpass = vk.SUBPASS_EXTERNAL, dstSubpass = 0,
-			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT}, dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+			srcSubpass = vk.SUBPASS_EXTERNAL,
+			dstSubpass = 0,
+			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+			dstStageMask = {.COLOR_ATTACHMENT_OUTPUT},
 			dstAccessMask = {.COLOR_ATTACHMENT_READ, .COLOR_ATTACHMENT_WRITE},
 		},
 		{
-			srcSubpass = 0, dstSubpass = vk.SUBPASS_EXTERNAL,
-			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT}, dstStageMask = {.BOTTOM_OF_PIPE},
+			srcSubpass = 0,
+			dstSubpass = vk.SUBPASS_EXTERNAL,
+			srcStageMask = {.COLOR_ATTACHMENT_OUTPUT},
+			dstStageMask = {.BOTTOM_OF_PIPE},
 			srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
 		},
 	}
 	info := vk.RenderPassCreateInfo {
-		sType = .RENDER_PASS_CREATE_INFO, attachmentCount = 1, pAttachments = &attachment,
-		subpassCount = 1, pSubpasses = &subpass,
-		dependencyCount = len(dependencies), pDependencies = &dependencies[0],
+		sType           = .RENDER_PASS_CREATE_INFO,
+		attachmentCount = 1,
+		pAttachments    = &attachment,
+		subpassCount    = 1,
+		pSubpasses      = &subpass,
+		dependencyCount = len(dependencies),
+		pDependencies   = &dependencies[0],
 	}
 	return vk.CreateRenderPass(device, &info, nil, out)
 }
 
-vulkan11_pipeline_create :: proc(r: ^Renderer, render_pass: vk.RenderPass, layout: ^vk.PipelineLayout, pipeline: ^vk.Pipeline) -> vk.Result {
+vulkan11_pipeline_create :: proc(
+	r: ^Vulkan11_Renderer,
+	render_pass: vk.RenderPass,
+	layout: ^vk.PipelineLayout,
+	pipeline: ^vk.Pipeline,
+) -> vk.Result {
 	layouts := [?]vk.DescriptorSetLayout{r.resources.desc_set_layout, r.resources.texture_layout}
-	push_range := vk.PushConstantRange{stageFlags = {.VERTEX, .FRAGMENT}, size = size_of(Quad11_Push_Constants)}
+	push_range := vk.PushConstantRange {
+		stageFlags = {.VERTEX, .FRAGMENT},
+		size       = size_of(Quad11_Push_Constants),
+	}
 	layout_info := vk.PipelineLayoutCreateInfo {
-		sType = .PIPELINE_LAYOUT_CREATE_INFO, setLayoutCount = len(layouts), pSetLayouts = &layouts[0],
-		pushConstantRangeCount = 1, pPushConstantRanges = &push_range,
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = len(layouts),
+		pSetLayouts            = &layouts[0],
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &push_range,
 	}
 	res := vk.CreatePipelineLayout(r.gpu.device, &layout_info, nil, layout)
 	if res != .SUCCESS do return res
 	stages := [?]vk.PipelineShaderStageCreateInfo {
-		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.VERTEX}, module = r.shader_module, pName = "vertMain"},
-		{sType = .PIPELINE_SHADER_STAGE_CREATE_INFO, stage = {.FRAGMENT}, module = r.shader_module, pName = "fragMain"},
+		{
+			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+			stage = {.VERTEX},
+			module = r.shader_module,
+			pName = "vertMain",
+		},
+		{
+			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+			stage = {.FRAGMENT},
+			module = r.shader_module,
+			pName = "fragMain",
+		},
 	}
-	vertex_input := vk.PipelineVertexInputStateCreateInfo{sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}
-	assembly := vk.PipelineInputAssemblyStateCreateInfo{sType = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, topology = .TRIANGLE_LIST}
-	viewport := vk.PipelineViewportStateCreateInfo{sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO, viewportCount = 1, scissorCount = 1}
-	raster := vk.PipelineRasterizationStateCreateInfo{sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO, lineWidth = 1}
-	multisample := vk.PipelineMultisampleStateCreateInfo{sType = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, rasterizationSamples = {._1}}
+	vertex_input := vk.PipelineVertexInputStateCreateInfo {
+		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+	}
+	assembly := vk.PipelineInputAssemblyStateCreateInfo {
+		sType    = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		topology = .TRIANGLE_LIST,
+	}
+	viewport := vk.PipelineViewportStateCreateInfo {
+		sType         = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		viewportCount = 1,
+		scissorCount  = 1,
+	}
+	raster := vk.PipelineRasterizationStateCreateInfo {
+		sType     = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		lineWidth = 1,
+	}
+	multisample := vk.PipelineMultisampleStateCreateInfo {
+		sType                = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		rasterizationSamples = {._1},
+	}
 	blend_attachment := vk.PipelineColorBlendAttachmentState {
-		colorWriteMask = {.R, .G, .B, .A}, blendEnable = true,
-		srcColorBlendFactor = .ONE, dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
-		srcAlphaBlendFactor = .ONE, dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA,
-		colorBlendOp = .ADD, alphaBlendOp = .ADD,
+		colorWriteMask      = {.R, .G, .B, .A},
+		blendEnable         = true,
+		srcColorBlendFactor = .ONE,
+		dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA,
+		srcAlphaBlendFactor = .ONE,
+		dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA,
+		colorBlendOp        = .ADD,
+		alphaBlendOp        = .ADD,
 	}
-	blend := vk.PipelineColorBlendStateCreateInfo{sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, attachmentCount = 1, pAttachments = &blend_attachment}
+	blend := vk.PipelineColorBlendStateCreateInfo {
+		sType           = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		attachmentCount = 1,
+		pAttachments    = &blend_attachment,
+	}
 	dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
-	dynamic_state := vk.PipelineDynamicStateCreateInfo{sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO, dynamicStateCount = len(dynamic_states), pDynamicStates = &dynamic_states[0]}
+	dynamic_state := vk.PipelineDynamicStateCreateInfo {
+		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		dynamicStateCount = len(dynamic_states),
+		pDynamicStates    = &dynamic_states[0],
+	}
 	info := vk.GraphicsPipelineCreateInfo {
-		sType = .GRAPHICS_PIPELINE_CREATE_INFO, stageCount = len(stages), pStages = &stages[0],
-		pVertexInputState = &vertex_input, pInputAssemblyState = &assembly, pViewportState = &viewport,
-		pRasterizationState = &raster, pMultisampleState = &multisample, pColorBlendState = &blend, pDynamicState = &dynamic_state,
-		layout = layout^, renderPass = render_pass, subpass = 0,
+		sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+		stageCount          = len(stages),
+		pStages             = &stages[0],
+		pVertexInputState   = &vertex_input,
+		pInputAssemblyState = &assembly,
+		pViewportState      = &viewport,
+		pRasterizationState = &raster,
+		pMultisampleState   = &multisample,
+		pColorBlendState    = &blend,
+		pDynamicState       = &dynamic_state,
+		layout              = layout^,
+		renderPass          = render_pass,
+		subpass             = 0,
 	}
 	return vk.CreateGraphicsPipelines(r.gpu.device, 0, 1, &info, nil, pipeline)
 }
 
-vulkan11_texture_descriptor :: proc(r: ^Renderer) -> (vk.DescriptorSet, vk.DescriptorPool, Renderer_Error) {
+vulkan11_texture_descriptor :: proc(
+	r: ^Vulkan11_Renderer,
+) -> (
+	vk.DescriptorSet,
+	vk.DescriptorPool,
+	Renderer_Error,
+) {
 	for pool in r.resources.texture_pools {
 		info := vk.DescriptorSetAllocateInfo {
-			sType = .DESCRIPTOR_SET_ALLOCATE_INFO, descriptorPool = pool,
-			descriptorSetCount = 1, pSetLayouts = &r.resources.texture_layout,
+			sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
+			descriptorPool     = pool,
+			descriptorSetCount = 1,
+			pSetLayouts        = &r.resources.texture_layout,
 		}
 		set: vk.DescriptorSet
 		res := vk.AllocateDescriptorSets(r.gpu.device, &info, &set)
@@ -706,10 +891,16 @@ vulkan11_texture_descriptor :: proc(r: ^Renderer) -> (vk.DescriptorSet, vk.Descr
 	if reserve(&r.resources.texture_pools, len(r.resources.texture_pools) + 1) != nil {
 		return {}, {}, renderer_error(.Resources, .Allocation_Failure, "texture pool table allocation failed", .Out_Of_Host_Memory)
 	}
-	size := vk.DescriptorPoolSize{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 64}
+	size := vk.DescriptorPoolSize {
+		type            = .COMBINED_IMAGE_SAMPLER,
+		descriptorCount = 64,
+	}
 	pool_info := vk.DescriptorPoolCreateInfo {
-		sType = .DESCRIPTOR_POOL_CREATE_INFO, flags = {.FREE_DESCRIPTOR_SET}, maxSets = 64,
-		poolSizeCount = 1, pPoolSizes = &size,
+		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
+		flags         = {.FREE_DESCRIPTOR_SET},
+		maxSets       = 64,
+		poolSizeCount = 1,
+		pPoolSizes    = &size,
 	}
 	pool: vk.DescriptorPool
 	res := vk.CreateDescriptorPool(r.gpu.device, &pool_info, nil, &pool)
@@ -717,8 +908,10 @@ vulkan11_texture_descriptor :: proc(r: ^Renderer) -> (vk.DescriptorSet, vk.Descr
 		return {}, {}, renderer_error(.Resources, .Vulkan_Failure, "texture descriptor pool creation failed", vk_result(res))
 	}
 	info := vk.DescriptorSetAllocateInfo {
-		sType = .DESCRIPTOR_SET_ALLOCATE_INFO, descriptorPool = pool,
-		descriptorSetCount = 1, pSetLayouts = &r.resources.texture_layout,
+		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool     = pool,
+		descriptorSetCount = 1,
+		pSetLayouts        = &r.resources.texture_layout,
 	}
 	set: vk.DescriptorSet
 	res = vk.AllocateDescriptorSets(r.gpu.device, &info, &set)
@@ -730,7 +923,7 @@ vulkan11_texture_descriptor :: proc(r: ^Renderer) -> (vk.DescriptorSet, vk.Descr
 	return set, pool, {}
 }
 
-vulkan11_set_vsync :: proc(r: ^Renderer, enabled: bool) {
+vulkan11_set_vsync :: proc(r: ^Vulkan11_Renderer, enabled: bool) {
 	if r.swapchain.vsync_enabled == enabled do return
 	r.swapchain.vsync_enabled = enabled
 	if r.surface != {} {
@@ -738,10 +931,10 @@ vulkan11_set_vsync :: proc(r: ^Renderer, enabled: bool) {
 	}
 }
 
-vulkan11_destroy :: proc(r: ^Renderer) {
+vulkan11_destroy :: proc(r: ^Vulkan11_Renderer) {
 	if r == nil do return
 
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 	if r.gpu.device != {} {
 		res := vk.DeviceWaitIdle(r.gpu.device)
 		if res != .SUCCESS && res != .ERROR_DEVICE_LOST {
@@ -753,7 +946,7 @@ vulkan11_destroy :: proc(r: ^Renderer) {
 			vma.destroy_image(r.gpu.allocator, r.pending_texture.image, r.pending_texture.alloc)
 		}
 
-		for i in 0 ..< MAX_FRAME_IN_FLIGHT {
+		for i in 0 ..< VULKAN11_MAX_FRAME_IN_FLIGHT {
 			fctx := &r.frame_contexts[i]
 			vk.DestroyFence(r.gpu.device, fctx.fence, nil)
 			vk.DestroySemaphore(r.gpu.device, fctx.present_semaphore, nil)
@@ -762,7 +955,11 @@ vulkan11_destroy :: proc(r: ^Renderer) {
 			delete(fctx.draw_batches)
 		}
 
-		swapchain_context_destroy(&r.swapchain, r.gpu.device, allocator = r.allocator)
+		vulkan11_swapchain_context_destroy(
+			&r.swapchain,
+			r.gpu.device,
+			allocator = r.resources_allocator,
+		)
 
 		// cleanup resources
 		for t in r.resources.textures {
@@ -777,7 +974,7 @@ vulkan11_destroy :: proc(r: ^Renderer) {
 		delete(r.resources.texture_pools)
 		vk.DestroyDescriptorSetLayout(r.gpu.device, r.resources.texture_layout, nil)
 		for &face in r.resources.font_faces {
-			font_face_destroy(&face, r.allocator)
+			font_face_destroy(&face, r.resources_allocator)
 		}
 		delete(r.resources.font_faces)
 		vk.DestroySampler(r.gpu.device, r.resources.tex_sampler, nil)
@@ -801,13 +998,13 @@ vulkan11_destroy :: proc(r: ^Renderer) {
 	if r.gpu.device != {} do vk.DestroyDevice(r.gpu.device, nil)
 	if r.surface != {} do r.platform.vulkan.destroy_surface(r.platform.user_data, r.gpu.instance, r.surface)
 	if r.gpu.instance != {} do vk.DestroyInstance(r.gpu.instance, nil)
-	r.backend = {}
+	r^ = {}
 }
 
 @(private)
-swapchain_context_init :: proc(
-	sc: ^Swapchain_Context,
-	gpu: ^GPU_Context,
+vulkan11_swapchain_context_init :: proc(
+	sc: ^Vulkan11_Swapchain_Context,
+	gpu: ^Vulkan11_GPU_Context,
 	surface: vk.SurfaceKHR,
 	surface_caps: vk.SurfaceCapabilitiesKHR,
 	render_pass: vk.RenderPass,
@@ -823,9 +1020,9 @@ swapchain_context_init :: proc(
 	success := false
 	defer {
 		if success {
-			swapchain_context_destroy(&old, gpu.device, allocator)
+			vulkan11_swapchain_context_destroy(&old, gpu.device, allocator)
 		} else {
-			swapchain_context_destroy(sc, gpu.device, allocator)
+			vulkan11_swapchain_context_destroy(sc, gpu.device, allocator)
 			sc^ = old
 		}
 	}
@@ -897,9 +1094,15 @@ swapchain_context_init :: proc(
 	}
 
 	l := gpu.capabilities.properties.limits
-	if swapchain_extent.width > min(l.maxFramebufferWidth, l.maxImageDimension2D, l.maxViewportDimensions[0]) ||
-	   swapchain_extent.height > min(l.maxFramebufferHeight, l.maxImageDimension2D, l.maxViewportDimensions[1]) {
-		return renderer_error(.Presentation, .Insufficient_Limits, "swapchain extent exceeds image, framebuffer, or viewport limits")
+	if swapchain_extent.width >
+		   min(l.maxFramebufferWidth, l.maxImageDimension2D, l.maxViewportDimensions[0]) ||
+	   swapchain_extent.height >
+		   min(l.maxFramebufferHeight, l.maxImageDimension2D, l.maxViewportDimensions[1]) {
+		return renderer_error(
+			.Presentation,
+			.Insufficient_Limits,
+			"swapchain extent exceeds image, framebuffer, or viewport limits",
+		)
 	}
 	families := [2]u32{gpu.queue_family, gpu.present_family}
 	transform := surface_caps.currentTransform
@@ -924,7 +1127,7 @@ swapchain_context_init :: proc(
 			"surface has no supported composite alpha",
 		)
 	}
-	image_count := max(surface_caps.minImageCount, u32(MAX_FRAME_IN_FLIGHT))
+	image_count := max(surface_caps.minImageCount, u32(VULKAN11_MAX_FRAME_IN_FLIGHT))
 	if surface_caps.maxImageCount > 0 do image_count = min(image_count, surface_caps.maxImageCount)
 	sc.create_info = vk.SwapchainCreateInfoKHR {
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
@@ -996,18 +1199,32 @@ swapchain_context_init :: proc(
 		}
 	}
 	if resize(&sc.framebuffers, int(swapchain_image_count)) != nil {
-		return renderer_error(.Presentation, .Allocation_Failure, "framebuffer table allocation failed", .Out_Of_Host_Memory)
+		return renderer_error(
+			.Presentation,
+			.Allocation_Failure,
+			"framebuffer table allocation failed",
+			.Out_Of_Host_Memory,
+		)
 	}
 	for &fb in sc.framebuffers do fb = {}
 	for i in 0 ..< swapchain_image_count {
 		fb_info := vk.FramebufferCreateInfo {
-			sType = .FRAMEBUFFER_CREATE_INFO, renderPass = render_pass,
-			attachmentCount = 1, pAttachments = &sc.views[i],
-			width = swapchain_extent.width, height = swapchain_extent.height, layers = 1,
+			sType           = .FRAMEBUFFER_CREATE_INFO,
+			renderPass      = render_pass,
+			attachmentCount = 1,
+			pAttachments    = &sc.views[i],
+			width           = swapchain_extent.width,
+			height          = swapchain_extent.height,
+			layers          = 1,
 		}
 		fb_result := vk.CreateFramebuffer(gpu.device, &fb_info, nil, &sc.framebuffers[i])
 		if fb_result != .SUCCESS {
-			return renderer_error(.Presentation, .Vulkan_Failure, "framebuffer creation failed", vk_result(fb_result))
+			return renderer_error(
+				.Presentation,
+				.Vulkan_Failure,
+				"framebuffer creation failed",
+				vk_result(fb_result),
+			)
 		}
 	}
 	for s in sc.render_semaphores {
@@ -1038,8 +1255,8 @@ swapchain_context_init :: proc(
 }
 
 @(private)
-swapchain_context_destroy :: proc(
-	sc: ^Swapchain_Context,
+vulkan11_swapchain_context_destroy :: proc(
+	sc: ^Vulkan11_Swapchain_Context,
 	device: vk.Device,
 	allocator := context.allocator,
 ) {
@@ -1062,8 +1279,8 @@ swapchain_context_destroy :: proc(
 }
 
 @(private)
-gpu_init :: proc(
-	r: ^Renderer,
+vulkan11_gpu_init :: proc(
+	r: ^Vulkan11_Renderer,
 	required_extensions: []cstring,
 	allocator := context.allocator,
 ) -> Renderer_Error {
@@ -1151,7 +1368,7 @@ gpu_init :: proc(
 	}
 	enabled_layers := [1]cstring{"VK_LAYER_KHRONOS_validation"}
 	enabled_layer_count: u32
-	if ENABLE_VK_VALIDATION {
+	if VULKAN11_ENABLE_VK_VALIDATION {
 		layers_properties, res := vk_enumerate(vk.LayerProperties)
 		defer delete(layers_properties, context.temp_allocator)
 		if res != .SUCCESS {
@@ -1168,7 +1385,9 @@ gpu_init :: proc(
 				break
 			}
 		}
-		if enabled_layer_count == 0 do fmt.printf("Warning: Layer %s not found. Skipping...\n", enabled_layers[0])
+		if enabled_layer_count == 0 {
+			log.infof("Warning: Layer %s not found. Skipping...", enabled_layers[0])
+		}
 	}
 	instance_create_info := &vk.InstanceCreateInfo {
 		sType = .INSTANCE_CREATE_INFO,
@@ -1221,7 +1440,7 @@ gpu_init :: proc(
 	if len(phys_devices) == 0 {
 		return renderer_error(.Device, .No_Present_Device, "no physical devices available")
 	}
-	candidates := make([dynamic]Device_Candidate, context.temp_allocator)
+	candidates := make([dynamic]Vulkan11_Device_Candidate, context.temp_allocator)
 	defer delete(candidates)
 	if reserve(&candidates, len(phys_devices)) != nil {
 		return renderer_error(
@@ -1270,7 +1489,12 @@ gpu_init :: proc(
 		for q, i in queues {
 			if q.queueCount == 0 do continue
 			supported: b32
-			support_result := vk.GetPhysicalDeviceSurfaceSupportKHR(pd, u32(i), r.surface, &supported)
+			support_result := vk.GetPhysicalDeviceSurfaceSupportKHR(
+				pd,
+				u32(i),
+				r.surface,
+				&supported,
+			)
 			if support_result != .SUCCESS {
 				return renderer_error(
 					.Device,
@@ -1285,8 +1509,8 @@ gpu_init :: proc(
 		if graphics == max(u32) || present == max(u32) {
 			props: vk.PhysicalDeviceProperties
 			vk.GetPhysicalDeviceProperties(pd, &props)
-			fmt.printf(
-				"Rejected GPU %s: graphics queue=%v present queue=%v\n",
+			log.infof(
+				"Rejected GPU %s: graphics queue=%v present queue=%v",
 				cstring(&props.deviceName[0]),
 				graphics != max(u32),
 				present != max(u32),
@@ -1315,8 +1539,8 @@ gpu_init :: proc(
 		if rejected.error.category != .None {
 			rejection = rejected.error
 			rejection.stage = .Device
-			fmt.printf(
-				"Rejected GPU %s: %s\n",
+			log.infof(
+				"Rejected GPU %s: %s",
 				cstring(&caps.properties.deviceName[0]),
 				error_message(&rejection),
 			)
@@ -1349,7 +1573,11 @@ gpu_init :: proc(
 			)
 		}
 		surface_caps: vk.SurfaceCapabilitiesKHR
-		capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(pd, r.surface, &surface_caps)
+		capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+			pd,
+			r.surface,
+			&surface_caps,
+		)
 		if capabilities_result != .SUCCESS {
 			return renderer_error(
 				.Device,
@@ -1366,8 +1594,8 @@ gpu_init :: proc(
 				.Missing_Capability,
 				"surface requires an sRGB nonlinear attachment, presentation modes, and COLOR_ATTACHMENT usage",
 			)
-			fmt.printf(
-				"Rejected GPU %s: %s\n",
+			log.infof(
+				"Rejected GPU %s: %s",
 				cstring(&caps.properties.deviceName[0]),
 				error_message(&rejection),
 			)
@@ -1375,7 +1603,7 @@ gpu_init :: proc(
 		}
 		append(
 			&candidates,
-			Device_Candidate {
+			Vulkan11_Device_Candidate {
 				physical = pd,
 				capabilities = caps,
 				limits = limits,
@@ -1395,10 +1623,10 @@ gpu_init :: proc(
 		dctx.physical, dctx.queue_family, dctx.present_family =
 			candidate.physical, candidate.graphics, candidate.present
 		dctx.capabilities, dctx.limits = candidate.capabilities, candidate.limits
-		creation_error = gpu_create_device(dctx)
+		creation_error = vulkan11_gpu_create_device(dctx)
 		if creation_error.category == .None do break
-		fmt.printf(
-			"GPU %s activation failed: %s (%v)\n",
+		log.infof(
+			"GPU %s activation failed: %s (%v)",
 			cstring(&candidate.capabilities.properties.deviceName[0]),
 			error_message(&creation_error),
 			creation_error.result,
@@ -1421,7 +1649,7 @@ gpu_init :: proc(
 		)
 	}
 	dctx.surface_format, _ = vulkan11_surface_format(formats)
-	allocator_error := gpu_init_allocator(dctx)
+	allocator_error := vulkan11_gpu_init_allocator(dctx)
 	if allocator_error.category != .None do return allocator_error
 	vulkan11_report_device(dctx)
 	return {}
@@ -1435,14 +1663,11 @@ Vulkan11_Requirements :: struct {
 
 @(private)
 vulkan11_requirements :: proc() -> Vulkan11_Requirements {
-	return {
-		api_version = vk.API_VERSION_1_1,
-		textures = TEXTURE_MAX_COUNT,
-	}
+	return {api_version = vk.API_VERSION_1_1, textures = VULKAN11_TEXTURE_MAX_COUNT}
 }
 
 @(private)
-Device_Capabilities :: struct {
+Vulkan11_Device_Capabilities :: struct {
 	properties:      vk.PhysicalDeviceProperties,
 	properties11:    vk.PhysicalDeviceMaintenance3Properties,
 	memory:          vk.PhysicalDeviceMemoryProperties,
@@ -1452,14 +1677,14 @@ Device_Capabilities :: struct {
 }
 
 @(private)
-Device_Rejection :: struct {
+Vulkan11_Device_Rejection :: struct {
 	error: Renderer_Error,
 }
 
 @(private)
-Device_Candidate :: struct {
+Vulkan11_Device_Candidate :: struct {
 	physical:          vk.PhysicalDevice,
-	capabilities:      Device_Capabilities,
+	capabilities:      Vulkan11_Device_Capabilities,
 	limits:            Negotiated_Limits,
 	graphics, present: u32,
 	priority:          int,
@@ -1471,7 +1696,7 @@ Device_Candidate :: struct {
 vulkan11_query_device :: proc(
 	pd: vk.PhysicalDevice,
 ) -> (
-	c: Device_Capabilities,
+	c: Vulkan11_Device_Capabilities,
 	err: Renderer_Error,
 ) {
 	c.properties11 = {
@@ -1514,11 +1739,11 @@ vulkan11_query_device :: proc(
 
 @(private)
 vulkan11_compare_requirements :: proc(
-	c: Device_Capabilities,
+	c: Vulkan11_Device_Capabilities,
 	req: Vulkan11_Requirements,
 ) -> (
 	Negotiated_Limits,
-	Device_Rejection,
+	Vulkan11_Device_Rejection,
 ) {
 	c := c
 	if c.properties.apiVersion < req.api_version {
@@ -1537,8 +1762,18 @@ vulkan11_compare_requirements :: proc(
 	}
 	l := c.properties.limits
 	max_allocation := min(c.properties11.maxMemoryAllocationSize, vk.DeviceSize(max(u32)))
-	instances := u32(min(u64(QUAD_MAX_INSTANCES), (u64(l.maxDrawIndexedIndexValue) + 1) / 4, u64(max_allocation) / (6 * size_of(u32))))
-	chunk_instances := min(instances, l.maxStorageBufferRange / u32(size_of(Quad_Instance)), VULKAN11_CHUNK_INSTANCES)
+	instances := u32(
+		min(
+			u64(QUAD_MAX_INSTANCES),
+			(u64(l.maxDrawIndexedIndexValue) + 1) / 4,
+			u64(max_allocation) / (6 * size_of(u32)),
+		),
+	)
+	chunk_instances := min(
+		instances,
+		l.maxStorageBufferRange / u32(size_of(Quad_Instance)),
+		VULKAN11_CHUNK_INSTANCES,
+	)
 	if chunk_instances == 0 {
 		return {}, {renderer_error(.Device, .Insufficient_Limits, "storage-buffer range cannot hold an instance")}
 	}
@@ -1550,7 +1785,13 @@ vulkan11_compare_requirements :: proc(
 	if instances == 0 {
 		return {}, {renderer_error(.Device, .Insufficient_Limits, "aligned instance chunk exceeds allocation or dynamic-offset limits")}
 	}
-	fonts := u32(min(u64(FONT_MAX_COUNT), u64(l.maxStorageBufferRange) / size_of(Quad_Font), u64(max_allocation) / size_of(Quad_Font)))
+	fonts := u32(
+		min(
+			u64(VULKAN11_FONT_MAX_COUNT),
+			u64(l.maxStorageBufferRange) / size_of(Quad_Font),
+			u64(max_allocation) / size_of(Quad_Font),
+		),
+	)
 	checks_limits := [?]struct {
 		name:                string,
 		required, supported: u64,
@@ -1567,7 +1808,11 @@ vulkan11_compare_requirements :: proc(
 		{"maxDescriptorSetSampledImages", 1, u64(l.maxDescriptorSetSampledImages)},
 		{"maxPerStageResources", 3, u64(l.maxPerStageResources)},
 		{"maxDrawIndexedIndexValue", 3, u64(l.maxDrawIndexedIndexValue)},
-		{"maxMemoryAllocationCount", MAX_FRAME_IN_FLIGHT + 5, u64(l.maxMemoryAllocationCount)},
+		{
+			"maxMemoryAllocationCount",
+			VULKAN11_MAX_FRAME_IN_FLIGHT + 5,
+			u64(l.maxMemoryAllocationCount),
+		},
 		{
 			"maxMemoryAllocationSize",
 			size_of(Quad_Instance),
@@ -1601,7 +1846,7 @@ vulkan11_descriptor_bindings :: proc() -> [2]vk.DescriptorSetLayoutBinding {
 			stageFlags = {.VERTEX, .FRAGMENT},
 		},
 		{
-			binding = DESC_BINDING_FONTS,
+			binding = VULKAN11_DESC_BINDING_FONTS,
 			descriptorType = .STORAGE_BUFFER,
 			descriptorCount = 1,
 			stageFlags = {.VERTEX, .FRAGMENT},
@@ -1630,7 +1875,7 @@ vulkan11_device_priority :: proc(kind: vk.PhysicalDeviceType) -> int {
 }
 
 @(private)
-vulkan11_candidate_memory :: proc(c: Device_Capabilities) -> u64 {
+vulkan11_candidate_memory :: proc(c: Vulkan11_Device_Capabilities) -> u64 {
 	c := c
 	total: u64
 	for heap, i in c.memory.memoryHeaps[:c.memory.memoryHeapCount] {
@@ -1642,7 +1887,7 @@ vulkan11_candidate_memory :: proc(c: Device_Capabilities) -> u64 {
 }
 
 @(private)
-vulkan11_choose_candidate :: proc(candidates: []Device_Candidate) -> int {
+vulkan11_choose_candidate :: proc(candidates: []Vulkan11_Device_Candidate) -> int {
 	best := -1
 	for candidate, i in candidates {
 		if candidate.tried do continue
@@ -1693,11 +1938,11 @@ vulkan11_pixel_count :: proc(width, height: int) -> (int, bool) {
 }
 
 @(private)
-vulkan11_report_device :: proc(gpu: ^GPU_Context) {
+vulkan11_report_device :: proc(gpu: ^Vulkan11_GPU_Context) {
 	c := &gpu.capabilities
 	p := &c.properties
-	fmt.printf(
-		"GPU: %s vendor=%#x device=%#x API=%d.%d.%d driver version=%#x\n",
+	log.infof(
+		"GPU: %s vendor=%#x device=%#x API=%d.%d.%d driver version=%#x",
 		cstring(&p.deviceName[0]),
 		p.vendorID,
 		p.deviceID,
@@ -1706,8 +1951,8 @@ vulkan11_report_device :: proc(gpu: ^GPU_Context) {
 		p.apiVersion & 0xfff,
 		p.driverVersion,
 	)
-	fmt.printf(
-		"Queues: graphics=%d present=%d; capacities: textures=%d (one fallback slot), fonts=%d instances=%d; memory budget telemetry=%v\n",
+	log.infof(
+		"Queues: graphics=%d present=%d; capacities: textures=%d (one fallback slot), fonts=%d instances=%d; memory budget telemetry=%v",
 		gpu.queue_family,
 		gpu.present_family,
 		gpu.limits.textures,
@@ -1716,13 +1961,13 @@ vulkan11_report_device :: proc(gpu: ^GPU_Context) {
 		c.budget_known,
 	)
 	estimate := u64(
-		MAX_FRAME_IN_FLIGHT * int(gpu.limits.instances) * size_of(Quad_Instance) +
+		VULKAN11_MAX_FRAME_IN_FLIGHT * int(gpu.limits.instances) * size_of(Quad_Instance) +
 		int(gpu.limits.instances) * 6 * size_of(u32) +
 		2 * int(gpu.limits.fonts) * size_of(Quad_Font) +
-		TEX_STAGING_BUFFER_SIZE,
+		VULKAN11_TEX_STAGING_BUFFER_SIZE,
 	)
-	fmt.printf(
-		"Initial buffers: %d bytes before allocator/alignment overhead, textures, descriptors, and swapchain\n",
+	log.infof(
+		"Initial buffers: %d bytes before allocator/alignment overhead, textures, descriptors, and swapchain",
 		estimate,
 	)
 	for heap, i in c.memory.memoryHeaps[:c.memory.memoryHeapCount] {
@@ -1730,41 +1975,46 @@ vulkan11_report_device :: proc(gpu: ^GPU_Context) {
 		for memory_type in c.memory.memoryTypes[:c.memory.memoryTypeCount] {
 			if memory_type.heapIndex == u32(i) && .HOST_VISIBLE in memory_type.propertyFlags do host_visible = true
 		}
-		fmt.printf(
-			"Heap %d: size=%d device-local=%v host-visible-types=%v",
-			i,
-			heap.size,
-			.DEVICE_LOCAL in heap.flags,
-			host_visible,
-		)
 		if c.budget_known {
-			fmt.printf(
-				" budget=%d usage=%d estimated headroom=%d\n",
+			log.infof(
+				"Heap %d: size=%d device-local=%v host-visible-types=%v budget=%d usage=%d estimated headroom=%d",
+				i,
+				heap.size,
+				.DEVICE_LOCAL in heap.flags,
+				host_visible,
 				c.budgets[i],
 				c.usages[i],
 				vulkan11_heap_headroom(c.budgets[i], c.usages[i]),
 			)
 		} else {
-			fmt.println(" budget=unknown")
+			log.infof(
+				"Heap %d: size=%d device-local=%v host-visible-types=%v budget=unknown",
+				i,
+				heap.size,
+				.DEVICE_LOCAL in heap.flags,
+				host_visible,
+			)
 		}
 	}
 }
 
 @(private)
-vulkan11_initial_allocation_estimate :: proc(r: ^Renderer) -> u64 {
+vulkan11_initial_allocation_estimate :: proc(r: ^Vulkan11_Renderer) -> u64 {
 	buffer_bytes := u64(
-		MAX_FRAME_IN_FLIGHT * int(r.chunk_stride) * ((int(r.gpu.limits.instances) + r.chunk_instances - 1) / r.chunk_instances) +
+		VULKAN11_MAX_FRAME_IN_FLIGHT *
+			int(r.chunk_stride) *
+			((int(r.gpu.limits.instances) + r.chunk_instances - 1) / r.chunk_instances) +
 		int(r.gpu.limits.instances) * 6 * size_of(u32) +
 		2 * int(r.gpu.limits.fonts) * size_of(Quad_Font) +
-		TEX_STAGING_BUFFER_SIZE,
+		VULKAN11_TEX_STAGING_BUFFER_SIZE,
 	)
 	width := u64(min(r.framebuffer_size.x, int(r.gpu.limits.max_image_dimension)))
 	height := u64(min(r.framebuffer_size.y, int(r.gpu.limits.max_image_dimension)))
 	swapchain_pixels := width * height
 	swapchain_bytes :=
-		min(swapchain_pixels, max(u64) / (size_of(Color) * MAX_FRAME_IN_FLIGHT)) *
+		min(swapchain_pixels, max(u64) / (size_of(Color) * VULKAN11_MAX_FRAME_IN_FLIGHT)) *
 		size_of(Color) *
-		MAX_FRAME_IN_FLIGHT
+		VULKAN11_MAX_FRAME_IN_FLIGHT
 	// Descriptor and block allowances are estimates, not driver memory requirements.
 	descriptor_allowance := u64(r.gpu.limits.textures) * 64 + 64
 	allocation_allowance := u64(64 * mem.Megabyte)
@@ -1773,7 +2023,7 @@ vulkan11_initial_allocation_estimate :: proc(r: ^Renderer) -> u64 {
 }
 
 @(private)
-vulkan11_refresh_memory :: proc(gpu: ^GPU_Context) {
+vulkan11_refresh_memory :: proc(gpu: ^Vulkan11_GPU_Context) {
 	c := &gpu.capabilities
 	budget := vk.PhysicalDeviceMemoryBudgetPropertiesEXT {
 		sType = .PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
@@ -1792,7 +2042,7 @@ vulkan11_refresh_memory :: proc(gpu: ^GPU_Context) {
 }
 
 @(private)
-vulkan11_memory_summary :: proc(gpu: ^GPU_Context) -> Memory_Summary {
+vulkan11_memory_summary :: proc(gpu: ^Vulkan11_GPU_Context) -> Memory_Summary {
 	c := &gpu.capabilities
 	summary := Memory_Summary {
 		heap_count = c.memory.memoryHeapCount,
@@ -1811,6 +2061,15 @@ vulkan11_memory_summary :: proc(gpu: ^GPU_Context) -> Memory_Summary {
 		}
 	}
 	return summary
+}
+
+vulkan11_effective_limits :: proc(r: ^Vulkan11_Renderer) -> Negotiated_Limits {
+	return r.gpu.limits
+}
+
+vulkan11_renderer_memory_summary :: proc(r: ^Vulkan11_Renderer) -> Memory_Summary {
+	vulkan11_refresh_memory(&r.gpu)
+	return vulkan11_memory_summary(&r.gpu)
 }
 
 @(private)
@@ -1876,7 +2135,7 @@ vulkan11_check_texture_format :: proc(
 #assert(offset_of(Quad_Instance, color) == 32 && offset_of(Quad_Instance, uv_rect) == 48)
 #assert(size_of(Quad11_Push_Constants) == 64)
 
-gpu_create_device :: proc(dctx: ^GPU_Context) -> Renderer_Error {
+vulkan11_gpu_create_device :: proc(dctx: ^Vulkan11_GPU_Context) -> Renderer_Error {
 	queue_familiy_priorities: f32 = 1.0
 	queue_create_info := vk.DeviceQueueCreateInfo {
 		sType            = .DEVICE_QUEUE_CREATE_INFO,
@@ -1941,7 +2200,7 @@ gpu_create_device :: proc(dctx: ^GPU_Context) -> Renderer_Error {
 	return {}
 }
 
-gpu_init_allocator :: proc(dctx: ^GPU_Context) -> Renderer_Error {
+vulkan11_gpu_init_allocator :: proc(dctx: ^Vulkan11_GPU_Context) -> Renderer_Error {
 	when size_of(rawptr) == 8 {
 		#assert(size_of(vma.Vulkan_Functions) == 216)
 		#assert(offset_of(vma.Vulkan_Functions, get_physical_device_memory_properties2_khr) == 184)
@@ -2001,7 +2260,11 @@ gpu_init_allocator :: proc(dctx: ^GPU_Context) -> Renderer_Error {
 }
 
 @(private)
-_append_instance :: proc(r: ^Renderer, instance: Quad_Instance, pivot: Pivot = .Topleft) {
+vulkan11_append_instance :: proc(
+	r: ^Vulkan11_Renderer,
+	instance: Quad_Instance,
+	pivot: Pivot = .Topleft,
+) {
 	if !vulkan11_drawing_ready(r) do return
 	fctx := &r.frame_contexts[r.frame_index]
 	if fctx.total_instances >= int(r.gpu.limits.instances) {
@@ -2029,7 +2292,8 @@ _append_instance :: proc(r: ^Renderer, instance: Quad_Instance, pivot: Pivot = .
 	}
 
 	fctx.shader_data.instances[fctx.total_instances] = instance
-	texture := int(instance.texture_index) if instance.type == u32(Quad_Instance_Type.Sprite) || instance.type == u32(Quad_Instance_Type.MSDF) else 0
+	texture :=
+		int(instance.texture_index) if instance.type == u32(Quad_Instance_Type.Sprite) || instance.type == u32(Quad_Instance_Type.MSDF) else 0
 	last := &fctx.draw_batches[len(fctx.draw_batches) - 1]
 	if last.num_instances > 0 && last.texture != texture {
 		batch := last^
@@ -2046,13 +2310,13 @@ _append_instance :: proc(r: ^Renderer, instance: Quad_Instance, pivot: Pivot = .
 	fctx.draw_batches[len(fctx.draw_batches) - 1].num_instances += 1
 }
 
-vulkan11_reject_frame :: proc(r: ^Renderer, message: string) {
+vulkan11_reject_frame :: proc(r: ^Vulkan11_Renderer, message: string) {
 	if r.frame_failed do return
 	log.errorf("reify drawing: %s", message)
 	r.frame_failed = true
 }
 
-vulkan11_drawing_ready :: proc(r: ^Renderer) -> bool {
+vulkan11_drawing_ready :: proc(r: ^Vulkan11_Renderer) -> bool {
 	if r == nil do return false
 	if r.frame_failed do return false
 	if !r.initialized ||
@@ -2068,13 +2332,13 @@ vulkan11_drawing_ready :: proc(r: ^Renderer) -> bool {
 	return true
 }
 
-vulkan11_start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) {
+vulkan11_start :: proc(r: ^Vulkan11_Renderer, camera_position: [2]f32, camera_zoom: f32) {
 	if r == nil || !r.initialized || r.stopped do return
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 	r.frame_started = true
 	r.frame_failed = false
 
-	r.frame_index = (r.frame_index + 1) % MAX_FRAME_IN_FLIGHT
+	r.frame_index = (r.frame_index + 1) % VULKAN11_MAX_FRAME_IN_FLIGHT
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.projection_type = .World
 
@@ -2095,7 +2359,7 @@ vulkan11_start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) 
 	}
 	append(
 		&fctx.draw_batches,
-		Draw_Batch {
+		Vulkan11_Draw_Batch {
 			scissor = vk.Rect2D {
 				offset = {0, 0},
 				extent = {
@@ -2108,9 +2372,9 @@ vulkan11_start :: proc(r: ^Renderer, camera_position: [2]f32, camera_zoom: f32) 
 }
 
 // Subsequent draw calls will use a screen-space projection matrix until `vulkan11_end_screen_mode` is called.
-vulkan11_begin_screen_mode :: proc(r: ^Renderer) {
+vulkan11_begin_screen_mode :: proc(r: ^Vulkan11_Renderer) {
 	if !vulkan11_drawing_ready(r) do return
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 
 	fctx := &r.frame_contexts[r.frame_index]
 	fctx.projection_type = .Screen
@@ -2126,9 +2390,9 @@ vulkan11_begin_screen_mode :: proc(r: ^Renderer) {
 }
 
 // Sets the projection back to using the world projection and camera view matrixes
-vulkan11_end_screen_mode :: proc(r: ^Renderer) {
+vulkan11_end_screen_mode :: proc(r: ^Vulkan11_Renderer) {
 	if !vulkan11_drawing_ready(r) do return
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 
 	fctx := &r.frame_contexts[r.frame_index]
 	if fctx.projection_type == .World do return
@@ -2145,52 +2409,50 @@ vulkan11_end_screen_mode :: proc(r: ^Renderer) {
 	)
 }
 
-@(private)
-vulkan11_present :: proc(
-	r: ^Renderer,
-	clear_color := Color{255, 0, 255, 255},
-) -> (
-	err: Renderer_Error,
-) {
+vulkan11_present :: proc(r: ^Vulkan11_Renderer, clear_color := Color{255, 0, 255, 255}) -> bool {
 	if r == nil || !r.initialized {
-		return renderer_error(.Presentation, .Invalid_State, "renderer is not initialized")
+		r.last_error = renderer_error(.Presentation, .Invalid_State, "renderer is not initialized")
+		return false
 	}
 	if r.stopped {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Invalid_State,
 			"renderer is stopped; destroy before reinitializing",
 		)
+		return false
 	}
 	if r.frame_failed {
 		r.frame_started = false
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Invalid_Input,
 			"frame rejected; see drawing diagnostic",
 		)
+		return false
 	}
 	defer {
 		r.frame_started = false
-		if err.category != .None {
+		if r.last_error.category != .None {
 			r.stopped = true
 		}
 	}
-	swapchain_error := vulkan11_update_swapchain(r)
-	if swapchain_error.category != .None do return swapchain_error
-	if r.framebuffer_size.x == 0 || r.framebuffer_size.y == 0 do return {}
-	context.allocator = r.allocator
+	r.last_error = vulkan11_update_swapchain(r)
+	if r.last_error.category != .None do return false
+	if r.framebuffer_size.x == 0 || r.framebuffer_size.y == 0 do return true // could happen while window is minimized
+	context.allocator = r.resources_allocator
 
 	fctx := &r.frame_contexts[r.frame_index]
 
 	fence_wait_result := vk.WaitForFences(r.gpu.device, 1, &fctx.fence, true, max(u64))
 	if fence_wait_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame fence wait failed",
 			vk_result(fence_wait_result),
 		)
+		return false
 	}
 
 	// Next swapchain image
@@ -2205,15 +2467,16 @@ vulkan11_present :: proc(
 	)
 	if res == .ERROR_OUT_OF_DATE_KHR {
 		r.swapchain.needs_update = true
-		return {}
+		return true
 	}
 	if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Surface_Lost if res == .ERROR_SURFACE_LOST_KHR else .Vulkan_Failure,
 			"image acquisition failed",
 			vk_result(res),
 		)
+		return false
 	}
 	if res == .SUBOPTIMAL_KHR do r.swapchain.needs_update = true
 
@@ -2221,7 +2484,11 @@ vulkan11_present :: proc(
 	for first := 0; first < fctx.total_instances; first += r.chunk_instances {
 		count := min(r.chunk_instances, fctx.total_instances - first)
 		offset := uintptr(first / r.chunk_instances) * uintptr(r.chunk_stride)
-		mem.copy(rawptr(uintptr(fctx.shader_data_buffer.mapped) + offset), &fctx.shader_data.instances[first], count * size_of(Quad_Instance))
+		mem.copy(
+			rawptr(uintptr(fctx.shader_data_buffer.mapped) + offset),
+			&fctx.shader_data.instances[first],
+			count * size_of(Quad_Instance),
+		)
 	}
 	instance_flush_result := vma.flush_allocation(
 		r.gpu.allocator,
@@ -2230,24 +2497,26 @@ vulkan11_present :: proc(
 		vk.DeviceSize(vk.WHOLE_SIZE),
 	)
 	if instance_flush_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"instance buffer flush failed",
 			vk_result(instance_flush_result),
 		)
+		return false
 	}
 
 	// Record command buffer
 	cb := fctx.command_buffer
 	command_reset_result := vk.ResetCommandBuffer(cb, {})
 	if command_reset_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command reset failed",
 			vk_result(command_reset_result),
 		)
+		return false
 	}
 	cb_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
@@ -2255,14 +2524,17 @@ vulkan11_present :: proc(
 	}
 	command_begin_result := vk.BeginCommandBuffer(cb, &cb_begin_info)
 	if command_begin_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command begin failed",
 			vk_result(command_begin_result),
 		)
+		return false
 	}
-	clear_value := vk.ClearValue{color = {float32 = convert_color_f32(clear_color)}}
+	clear_value := vk.ClearValue {
+		color = {float32 = convert_color_f32(clear_color)},
+	}
 	rendering_info := vk.RenderPassBeginInfo {
 		sType = .RENDER_PASS_BEGIN_INFO,
 		renderPass = r.render_pass,
@@ -2311,13 +2583,31 @@ vulkan11_present :: proc(
 		)
 		pixel_scissor := vulkan11_pixel_scissor(r, batch.scissor)
 		vk.CmdSetScissor(cb, 0, 1, &pixel_scissor)
-		vk.CmdBindDescriptorSets(cb, .GRAPHICS, r.pipeline_layout, 1, 1, &r.resources.texture_sets[batch.texture], 0, nil)
+		vk.CmdBindDescriptorSets(
+			cb,
+			.GRAPHICS,
+			r.pipeline_layout,
+			1,
+			1,
+			&r.resources.texture_sets[batch.texture],
+			0,
+			nil,
+		)
 		first := batch.index_offset
 		end := first + batch.num_instances
 		for first < end {
 			chunk, local, count := vulkan11_chunk_draw(first, end - first, r.chunk_instances)
 			dynamic_offset := u32(vk.DeviceSize(chunk) * r.chunk_stride)
-			vk.CmdBindDescriptorSets(cb, .GRAPHICS, r.pipeline_layout, 0, 1, &fctx.desc_set, 1, &dynamic_offset)
+			vk.CmdBindDescriptorSets(
+				cb,
+				.GRAPHICS,
+				r.pipeline_layout,
+				0,
+				1,
+				&fctx.desc_set,
+				1,
+				&dynamic_offset,
+			)
 			vk.CmdDrawIndexed(cb, u32(count * 6), 1, u32(local * 6), 0, 0)
 			if r.perf.enabled do r.perf.draw_calls += 1
 			first += count
@@ -2327,12 +2617,13 @@ vulkan11_present :: proc(
 	vk.CmdEndRenderPass(cb)
 	command_end_result := vk.EndCommandBuffer(cb)
 	if command_end_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame command end failed",
 			vk_result(command_end_result),
 		)
+		return false
 	}
 	// Submit command buffer
 	wait_stages := vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT}
@@ -2348,21 +2639,23 @@ vulkan11_present :: proc(
 	}
 	fence_reset_result := vk.ResetFences(r.gpu.device, 1, &fctx.fence)
 	if fence_reset_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame fence reset failed",
 			vk_result(fence_reset_result),
 		)
+		return false
 	}
 	submit_result := vk.QueueSubmit(r.gpu.queue, 1, &submit_info, fctx.fence)
 	if submit_result != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Vulkan_Failure,
 			"frame submission failed; renderer stopped",
 			vk_result(submit_result),
 		)
+		return false
 	}
 
 	// vulkan11_present
@@ -2375,28 +2668,28 @@ vulkan11_present :: proc(
 		pImageIndices      = &image_index,
 	}
 	res = vk.QueuePresentKHR(r.gpu.present_queue, &present_info)
-	if res == .ERROR_OUT_OF_DATE_KHR ||
-	   res == .SUBOPTIMAL_KHR {
+	if res == .ERROR_OUT_OF_DATE_KHR || res == .SUBOPTIMAL_KHR {
 		r.swapchain.needs_update = true
-		return {}
+		return true
 	}
 	if res != .SUCCESS {
-		return renderer_error(
+		r.last_error = renderer_error(
 			.Presentation,
 			.Surface_Lost if res == .ERROR_SURFACE_LOST_KHR else .Vulkan_Failure,
 			"presentation failed",
 			vk_result(res),
 		)
+		return false
 	}
-	return {}
+	return true
 }
 
-vulkan11_debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
- log.warn("Vulkan 1.1 debug capture is unsupported")
- return false
+vulkan11_debug_capture_ppm :: proc(r: ^Vulkan11_Renderer, path: string) -> bool {
+	log.warn("Vulkan 1.1 debug capture is unsupported")
+	return false
 }
 
-vulkan11_window_resize :: proc(r: ^Renderer, width, height: i32) {
+vulkan11_window_resize :: proc(r: ^Vulkan11_Renderer, width, height: i32) {
 	if r.window.width == width && r.window.height == height do return
 	r.window.width = width
 	r.window.height = height
@@ -2404,7 +2697,7 @@ vulkan11_window_resize :: proc(r: ^Renderer, width, height: i32) {
 }
 
 vulkan11_draw_image :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	tex: Texture_Handle,
 	position: [2]f32,
 	rotation: f32 = 0,
@@ -2428,7 +2721,7 @@ vulkan11_draw_image :: proc(
 		scale.y * f32(texture.height) * uv_scale.y,
 	}
 	color := Color{rgb_tint.r, rgb_tint.g, rgb_tint.b, u8(alpha * 255 + 0.5)}
-	_append_instance(
+	vulkan11_append_instance(
 		r,
 		Quad_Instance {
 			pos = position,
@@ -2443,7 +2736,7 @@ vulkan11_draw_image :: proc(
 }
 
 vulkan11_draw_rect :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	position: [2]f32,
 	width, height: f32,
 	color: Color,
@@ -2451,7 +2744,7 @@ vulkan11_draw_rect :: proc(
 	rotation: f32 = 0,
 	is_additive := false,
 ) {
-	_append_instance(
+	vulkan11_append_instance(
 		r,
 		Quad_Instance {
 			pos = position,
@@ -2466,7 +2759,7 @@ vulkan11_draw_rect :: proc(
 }
 
 vulkan11_draw_line :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	p0: [2]f32,
 	p1: [2]f32,
 	thickness: int,
@@ -2513,13 +2806,13 @@ vulkan11_draw_line :: proc(
 }
 
 vulkan11_draw_circle :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	position: [2]f32,
 	radius: f32,
 	color: Color,
 	is_additive := false,
 ) {
-	_append_instance(
+	vulkan11_append_instance(
 		r,
 		Quad_Instance {
 			pos = position,
@@ -2533,12 +2826,12 @@ vulkan11_draw_circle :: proc(
 }
 
 vulkan11_draw_triangle :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	p1, p2, p3: [2]f32,
 	color: Color,
 	is_additive := false,
 ) {
-	_append_instance(
+	vulkan11_append_instance(
 		r,
 		Quad_Instance {
 			pos = p1,
@@ -2553,7 +2846,7 @@ vulkan11_draw_triangle :: proc(
 }
 
 vulkan11_draw_text :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	font: Font_Face_Handle,
 	text: string,
 	pos: [2]f32,
@@ -2570,11 +2863,11 @@ vulkan11_draw_text :: proc(
 		return
 	}
 	face := r.resources.font_faces[font.idx]
-	layout := layout_text(face, text, font_size, pos, spaces_per_tab, r.allocator)
+	layout := layout_text(face, text, font_size, pos, spaces_per_tab, r.resources_allocator)
 	defer delete(layout.quads)
 	text_color := convert_color_pma(color, false)
 	for quad in layout.quads {
-		_append_instance(
+		vulkan11_append_instance(
 			r,
 			Quad_Instance {
 				type = u32(Quad_Instance_Type.MSDF),
@@ -2591,22 +2884,22 @@ vulkan11_draw_text :: proc(
 }
 
 vulkan11_draw_fps :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	font: Font_Face_Handle,
 	position: [2]f32,
 	font_size: int,
 	color := Color{255, 255, 255, 255},
-	allocator := context.allocator,
+	allocator := context.temp_allocator,
 ) {
 	context.allocator = allocator
 
-	_fps_tracker_update()
-	fps_text := fmt.tprintf("%d FPS", fps_tracker.display)
+	vulkan11_fps_tracker_update()
+	fps_text := fmt.tprintf("%d FPS", vulkan11_fps_tracker.display)
 	vulkan11_draw_text(r, font, fps_text, position, font_size, color, allocator = allocator)
 }
 
 vulkan11_measure_text :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	font_handle: Font_Face_Handle,
 	text: string,
 	font_size: int,
@@ -2621,7 +2914,7 @@ vulkan11_measure_text :: proc(
 		text,
 		font_size,
 		spaces_per_tab = spaces_per_tab,
-		allocator = r.allocator,
+		allocator = r.resources_allocator,
 	)
 	defer delete(layout.quads)
 
@@ -2637,7 +2930,7 @@ vulkan11_measure_text :: proc(
 }
 
 @(private)
-FPS_Tracker :: struct {
+Vulkan11_FPS_Tracker :: struct {
 	initialized: bool,
 	last_time:   time.Time,
 	frame_count: int,
@@ -2645,34 +2938,34 @@ FPS_Tracker :: struct {
 	display:     int,
 }
 
-fps_tracker: FPS_Tracker
+vulkan11_fps_tracker: Vulkan11_FPS_Tracker
 
 @(private)
-_fps_tracker_update :: proc() {
+vulkan11_fps_tracker_update :: proc() {
 	curr_time := time.now()
-	if !fps_tracker.initialized {
-		fps_tracker.initialized = true
-		fps_tracker.last_time = curr_time
+	if !vulkan11_fps_tracker.initialized {
+		vulkan11_fps_tracker.initialized = true
+		vulkan11_fps_tracker.last_time = curr_time
 		return
 	}
 
-	dt := time.diff(fps_tracker.last_time, curr_time)
-	fps_tracker.last_time = curr_time
-	fps_tracker.frame_count += 1
-	fps_tracker.elapsed += dt
+	dt := time.diff(vulkan11_fps_tracker.last_time, curr_time)
+	vulkan11_fps_tracker.last_time = curr_time
+	vulkan11_fps_tracker.frame_count += 1
+	vulkan11_fps_tracker.elapsed += dt
 
-	if fps_tracker.elapsed >= time.Second {
-		fps_tracker.display = fps_tracker.frame_count
-		fps_tracker.frame_count = 0
-		fps_tracker.elapsed -= time.Second
+	if vulkan11_fps_tracker.elapsed >= time.Second {
+		vulkan11_fps_tracker.display = vulkan11_fps_tracker.frame_count
+		vulkan11_fps_tracker.frame_count = 0
+		vulkan11_fps_tracker.elapsed -= time.Second
 	}
 }
 
 
 // Set the scissor/clip in SCREEN SPACE
-vulkan11_set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
+vulkan11_set_scissor :: proc(r: ^Vulkan11_Renderer, x, y: i32, width, height: u32) {
 	if !vulkan11_drawing_ready(r) do return
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 	fctx := &r.frame_contexts[r.frame_index]
 	if reserve(&fctx.draw_batches, len(fctx.draw_batches) + 1) != nil {
 		vulkan11_reject_frame(r, "frame batch allocation failed (out of host memory)")
@@ -2680,7 +2973,7 @@ vulkan11_set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 	}
 	append(
 		&fctx.draw_batches,
-		Draw_Batch {
+		Vulkan11_Draw_Batch {
 			index_offset = fctx.total_instances,
 			scissor = vk.Rect2D{offset = {x, y}, extent = {width = width, height = height}},
 			num_instances = 0,
@@ -2690,66 +2983,88 @@ vulkan11_set_scissor :: proc(r: ^Renderer, x, y: i32, width, height: u32) {
 }
 
 // Reset the scissor/clip back to the full window
-vulkan11_clear_scissor :: proc(r: ^Renderer) {
-	context.allocator = r.allocator
+vulkan11_clear_scissor :: proc(r: ^Vulkan11_Renderer) {
+	context.allocator = r.resources_allocator
 	vulkan11_set_scissor(r, 0, 0, u32(max(0, r.window.width)), u32(max(0, r.window.height)))
 }
 
-
 // Create a Texture and upload it to the GPU and get back a handle which can be
 // used later to render with that Texture.
-@(private)
 vulkan11_texture_load :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
+	pixels: []Color,
+	width, height: int,
+	color_space: Texture_Color_Space = .SRGB,
+) -> (
+	handle: Texture_Handle,
+	ok: bool,
+) {
+	return vulkan11_texture_load_with_sampler(r, pixels, width, height, nil, color_space)
+}
+
+vulkan11_texture_load_with_sampler :: proc(
+	r: ^Vulkan11_Renderer,
 	pixels: []Color,
 	width, height: int,
 	optional_sampler: Maybe(vk.Sampler) = nil,
 	color_space: Texture_Color_Space = .SRGB,
 ) -> (
 	handle: Texture_Handle,
-	err: Renderer_Error,
+	ok: bool,
 ) {
-	defer if err.category == .Device_Lost do r.stopped = true
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
+
+	defer if r.last_error.category == .Device_Lost do r.stopped = true
 
 	if r.gpu.allocator == nil || r.stopped {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Invalid_State, "renderer cannot load resources")
+		r.last_error = renderer_error(.Resources, .Invalid_State, "renderer cannot load resources")
+		return {idx = -1}, false
 	}
 	count, valid := vulkan11_pixel_count(width, height)
 	if !valid || len(pixels) != count {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Invalid_Input, "texture requires positive dimensions, nonoverflowing RGBA size, and an exact pixel slice")
+		r.last_error = renderer_error(
+			.Resources,
+			.Invalid_Input,
+			"texture requires positive dimensions, nonoverflowing RGBA size, and an exact pixel slice",
+		)
+		return {idx = -1}, false
 	}
 	if u32(width) > r.gpu.limits.max_image_dimension ||
 	   u32(height) > r.gpu.limits.max_image_dimension {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Insufficient_Limits, "texture dimensions exceed maxImageDimension2D")
+		r.last_error = renderer_error(
+			.Resources,
+			.Insufficient_Limits,
+			"texture dimensions exceed maxImageDimension2D",
+		)
+		return {idx = -1}, false
 	}
 	if len(r.resources.textures) >= int(r.gpu.limits.textures) {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Capacity_Exhausted, "negotiated texture capacity reached (includes fallback slot)")
+		r.last_error = renderer_error(
+			.Resources,
+			.Capacity_Exhausted,
+			"negotiated texture capacity reached (includes fallback slot)",
+		)
+		return {idx = -1}, false
 	}
 	if reserve(&r.resources.textures, len(r.resources.textures) + 1) != nil ||
 	   reserve(&r.resources.texture_sets, len(r.resources.textures) + 1) != nil ||
 	   reserve(&r.resources.texture_set_pools, len(r.resources.textures) + 1) != nil {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Allocation_Failure, "texture table allocation failed", .Out_Of_Host_Memory)
+		r.last_error = renderer_error(
+			.Resources,
+			.Allocation_Failure,
+			"texture table allocation failed",
+			.Out_Of_Host_Memory,
+		)
+		return {idx = -1}, false
 	}
 
 	sampler: vk.Sampler
 	real_sampler, has_sampler := optional_sampler.?
 	if has_sampler {
 		sampler = real_sampler
+		r.last_error = renderer_error(.Resources, .Invalid_Input, "texture sampler is null")
 		if sampler == {} {
-			return {
-				idx = -1,
-			}, renderer_error(.Resources, .Invalid_Input, "texture sampler is null")
+			return {idx = -1}, false
 		}
 	} else {
 		sampler = r.resources.tex_sampler
@@ -2763,14 +3078,24 @@ vulkan11_texture_load :: proc(
 		texture_format = .R8G8B8A8_UNORM
 	}
 	// External sampler handles have no queryable filter state; require linear support.
-	format_error := vulkan11_check_texture_format(r.gpu.physical, texture_format, u32(width), u32(height), sampler != r.resources.tex_sampler)
-	if format_error.category != .None do return {idx = -1}, format_error
+	r.last_error = vulkan11_check_texture_format(
+		r.gpu.physical,
+		texture_format,
+		u32(width),
+		u32(height),
+		sampler != r.resources.tex_sampler,
+	)
+	if r.last_error.category != .None do return {idx = -1}, false
 	vulkan11_refresh_memory(&r.gpu)
 	reader_wait_result := vk.DeviceWaitIdle(r.gpu.device)
 	if reader_wait_result != .SUCCESS {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "waiting for shared resource readers failed", vk_result(reader_wait_result))
+		r.last_error = renderer_error(
+			.Resources,
+			.Vulkan_Failure,
+			"waiting for shared resource readers failed",
+			vk_result(reader_wait_result),
+		)
+		return {idx = -1}, false
 	}
 
 	tex, create_res := vk_create_texture(
@@ -2783,9 +3108,13 @@ vulkan11_texture_load :: proc(
 		r.gpu.capabilities.properties11.maxMemoryAllocationSize,
 	)
 	if create_res != .SUCCESS {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "texture allocation/view creation failed", vk_result(create_res))
+		r.last_error = renderer_error(
+			.Resources,
+			.Vulkan_Failure,
+			"texture allocation/view creation failed",
+			vk_result(create_res),
+		)
+		return {idx = -1}, false
 	}
 	published := false
 	defer if !published && r.pending_texture.image != tex.image {
@@ -2802,15 +3131,22 @@ vulkan11_texture_load :: proc(
 		&tex_staging_buffer_ptr,
 	)
 	if staging_map_result != .SUCCESS {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Vulkan_Failure, "texture staging map failed", vk_result(staging_map_result))
+		r.last_error = renderer_error(
+			.Resources,
+			.Vulkan_Failure,
+			"texture staging map failed",
+			vk_result(staging_map_result),
+		)
+		return {idx = -1}, false
 	}
 	defer vma.unmap_memory(r.gpu.allocator, r.resources.tex_staging_alloc)
 	if tex_staging_buffer_ptr == nil {
-		return {
-			idx = -1,
-		}, renderer_error(.Resources, .Allocation_Failure, "texture staging map returned null")
+		r.last_error = renderer_error(
+			.Resources,
+			.Allocation_Failure,
+			"texture staging map returned null",
+		)
+		return {idx = -1}, false
 	}
 	tile_width := min(width, r.resources.tex_staging_size / size_of(Color))
 	rows_per_chunk := r.resources.tex_staging_size / (tile_width * size_of(Color))
@@ -2850,9 +3186,13 @@ vulkan11_texture_load :: proc(
 				vk.DeviceSize(data_size),
 			)
 			if staging_flush_result != .SUCCESS {
-				return {
-					idx = -1,
-				}, renderer_error(.Resources, .Vulkan_Failure, "texture staging flush failed", vk_result(staging_flush_result))
+				r.last_error = renderer_error(
+					.Resources,
+					.Vulkan_Failure,
+					"texture staging flush failed",
+					vk_result(staging_flush_result),
+				)
+				return {idx = -1}, false
 			}
 
 			one_time_cb, begin_res := vk_one_time_cmd_buffer_begin(
@@ -2861,20 +3201,39 @@ vulkan11_texture_load :: proc(
 				r.command_pool,
 			)
 			if begin_res != .SUCCESS {
-				return {
-					idx = -1,
-				}, renderer_error(.Resources, .Vulkan_Failure, "texture upload begin failed", vk_result(begin_res))
+				r.last_error = renderer_error(
+					.Resources,
+					.Vulkan_Failure,
+					"texture upload begin failed",
+					vk_result(begin_res),
+				)
+				return {idx = -1}, false
 			}
 			{
 				// transfer from the staging buffer to the GPU
 				staging_to_gpu_barrier := vk.ImageMemoryBarrier {
 					sType = .IMAGE_MEMORY_BARRIER,
-					dstAccessMask = {.TRANSFER_WRITE}, oldLayout = .UNDEFINED, newLayout = .TRANSFER_DST_OPTIMAL,
-					srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-					image = tex.image, subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+					dstAccessMask = {.TRANSFER_WRITE},
+					oldLayout = .UNDEFINED,
+					newLayout = .TRANSFER_DST_OPTIMAL,
+					srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+					dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+					image = tex.image,
+					subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 				}
 				if y == 0 && x == 0 {
-					vk.CmdPipelineBarrier(one_time_cb.cmd, {.TOP_OF_PIPE}, {.TRANSFER}, {}, 0, nil, 0, nil, 1, &staging_to_gpu_barrier)
+					vk.CmdPipelineBarrier(
+						one_time_cb.cmd,
+						{.TOP_OF_PIPE},
+						{.TRANSFER},
+						{},
+						0,
+						nil,
+						0,
+						nil,
+						1,
+						&staging_to_gpu_barrier,
+					)
 				}
 
 				// Tell GPU to move the bytes from staging to GPU
@@ -2901,13 +3260,28 @@ vulkan11_texture_load :: proc(
 				// shaders
 				gpu_to_frag_barrier := vk.ImageMemoryBarrier {
 					sType = .IMAGE_MEMORY_BARRIER,
-					srcAccessMask = {.TRANSFER_WRITE}, dstAccessMask = {.SHADER_READ},
-					oldLayout = .TRANSFER_DST_OPTIMAL, newLayout = .SHADER_READ_ONLY_OPTIMAL,
-					srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-					image = tex.image, subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+					srcAccessMask = {.TRANSFER_WRITE},
+					dstAccessMask = {.SHADER_READ},
+					oldLayout = .TRANSFER_DST_OPTIMAL,
+					newLayout = .SHADER_READ_ONLY_OPTIMAL,
+					srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+					dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+					image = tex.image,
+					subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 				}
 				if y + rows == height && x + columns == width {
-					vk.CmdPipelineBarrier(one_time_cb.cmd, {.TRANSFER}, {.FRAGMENT_SHADER}, {}, 0, nil, 0, nil, 1, &gpu_to_frag_barrier)
+					vk.CmdPipelineBarrier(
+						one_time_cb.cmd,
+						{.TRANSFER},
+						{.FRAGMENT_SHADER},
+						{},
+						0,
+						nil,
+						0,
+						nil,
+						1,
+						&gpu_to_frag_barrier,
+					)
 				}
 			}
 			upload_result := vk_one_time_cmd_buffer_end(&one_time_cb)
@@ -2916,15 +3290,22 @@ vulkan11_texture_load :: proc(
 					r.pending_upload, r.pending_texture = one_time_cb, tex
 					r.stopped = true
 				}
-				return {
-					idx = -1,
-				}, renderer_error(.Resources, .Vulkan_Failure, "texture upload failed", vk_result(upload_result))
+				r.last_error = renderer_error(
+					.Resources,
+					.Vulkan_Failure,
+					"texture upload failed",
+					vk_result(upload_result),
+				)
+				return {idx = -1}, false
 			}
 		}
 	}
 
 	descriptor, pool, descriptor_error := vulkan11_texture_descriptor(r)
-	if descriptor_error.category != .None do return {idx = -1}, descriptor_error
+	if descriptor_error.category != .None {
+		r.last_error = descriptor_error
+		return {idx = -1}, false
+	}
 	write_desc_set := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
 		dstSet          = descriptor,
@@ -2943,13 +3324,18 @@ vulkan11_texture_load :: proc(
 	append(&r.resources.texture_set_pools, pool)
 	published = true
 
-	return Texture_Handle{idx = idx}, {}
+	return Texture_Handle{idx = idx}, true
 }
 
-vulkan11_rollback_texture :: proc(r: ^Renderer, handle: Texture_Handle) {
+vulkan11_rollback_texture :: proc(r: ^Vulkan11_Renderer, handle: Texture_Handle) {
 	assert(handle.idx > 0 && handle.idx == len(r.resources.textures) - 1)
 	tex := r.resources.textures[handle.idx]
-	res := vk.FreeDescriptorSets(r.gpu.device, r.resources.texture_set_pools[handle.idx], 1, &r.resources.texture_sets[handle.idx])
+	res := vk.FreeDescriptorSets(
+		r.gpu.device,
+		r.resources.texture_set_pools[handle.idx],
+		1,
+		&r.resources.texture_sets[handle.idx],
+	)
 	if res != .SUCCESS {
 		log.errorf("Vulkan 1.1 texture descriptor rollback failed: %v", res)
 	}
@@ -2961,7 +3347,7 @@ vulkan11_rollback_texture :: proc(r: ^Renderer, handle: Texture_Handle) {
 }
 
 vulkan11_texture_get_metrics :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	handle: Texture_Handle,
 ) -> (
 	Texture_Metrics,
@@ -2976,22 +3362,22 @@ vulkan11_texture_get_metrics :: proc(
 
 
 // Load a font atlas which follows the Bitmap Font (BMF) Format (https://typebits.gitlab.io/bmf-format/)
-@(private)
 vulkan11_font_load :: proc(
-	r: ^Renderer,
+	r: ^Vulkan11_Renderer,
 	font_atlas_json: []byte,
 	font_atlas_img: []byte,
 ) -> (
 	handle: Font_Face_Handle,
 	err: Font_Atlas_Error,
 ) {
+	handle.idx = -1
 	defer {
 		gpu_err, is_gpu_error := err.(Renderer_Error)
 		if is_gpu_error && gpu_err.category == .Device_Lost {
 			r.stopped = true
 		}
 	}
-	context.allocator = r.allocator
+	context.allocator = r.resources_allocator
 	if !r.initialized || r.stopped {
 		return {idx = -1}, renderer_error(.Resources, .Invalid_State, "renderer cannot load fonts")
 	}
@@ -3020,10 +3406,10 @@ vulkan11_font_load :: proc(
 	json.unmarshal(font_atlas_json, &atlas, allocator = font_atlas_allocator) or_return
 
 	if len(atlas.pages) != 1 || atlas.common.pages != 1 {
-		return {}, Font_Atlas_Load_Error.Invalid_Page_Count
+		return {idx = -1}, Font_Atlas_Load_Error.Invalid_Page_Count
 	}
 	if atlas.common.scale_w <= 0 || atlas.common.scale_h <= 0 {
-		return {}, Font_Atlas_Load_Error.Invalid_Dimensions
+		return {idx = -1}, Font_Atlas_Load_Error.Invalid_Dimensions
 	}
 	if atlas.info.size <= 0 ||
 	   atlas.common.line_height <= 0 ||
@@ -3035,10 +3421,10 @@ vulkan11_font_load :: proc(
 		return {idx = -1}, Font_Atlas_Load_Error.Invalid_Dimensions
 	}
 	if len(atlas.chars) == 0 {
-		return {}, Font_Atlas_Load_Error.Empty_Glyphs
+		return {idx = -1}, Font_Atlas_Load_Error.Empty_Glyphs
 	}
 	if atlas.common.packed != 0 {
-		return {}, Font_Atlas_Load_Error.Packed_Channels_Not_Supported
+		return {idx = -1}, Font_Atlas_Load_Error.Packed_Channels_Not_Supported
 	}
 	for glyph in atlas.chars {
 		if glyph.page != 0 ||
@@ -3059,7 +3445,7 @@ vulkan11_font_load :: proc(
 		return {idx = -1}, Font_Atlas_Load_Error.Invalid_Dimensions
 	}
 	if atlas_img.depth != 8 || (atlas_img.channels != 3 && atlas_img.channels != 4) {
-		return {}, Font_Atlas_Load_Error.Invalid_Pixel_Format
+		return {idx = -1}, Font_Atlas_Load_Error.Invalid_Pixel_Format
 	}
 
 	pixel_count, valid := vulkan11_pixel_count(atlas_img.width, atlas_img.height)
@@ -3094,7 +3480,7 @@ vulkan11_font_load :: proc(
 		)
 	}
 
-	atlas_tex, texture_error := vulkan11_texture_load(
+	atlas_tex, tex_ok := vulkan11_texture_load_with_sampler(
 		r,
 		atlas_img_pixels,
 		atlas_img.width,
@@ -3102,12 +3488,13 @@ vulkan11_font_load :: proc(
 		r.resources.msdf_sampler,
 		color_space = .Linear,
 	)
-	if texture_error.category != .None do return {idx = -1}, texture_error
+	if r.last_error.category != .None do return {idx = -1}, r.last_error
+
 	success := false
 	defer if !success do vulkan11_rollback_texture(r, atlas_tex)
 
 	face: Font_Face
-	defer if !success do font_face_destroy(&face, r.allocator)
+	defer if !success do font_face_destroy(&face, r.resources_allocator)
 	face.texture = atlas_tex
 	face.size = atlas.info.size
 	face.line_height = atlas.common.line_height
@@ -3202,11 +3589,26 @@ vulkan11_font_load :: proc(
 			&region,
 		)
 		barrier := vk.BufferMemoryBarrier {
-			sType = .BUFFER_MEMORY_BARRIER, srcAccessMask = {.TRANSFER_WRITE}, dstAccessMask = {.SHADER_READ},
-			buffer = r.resources.font_device_buffer, size = vk.DeviceSize(vk.WHOLE_SIZE),
-			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			sType               = .BUFFER_MEMORY_BARRIER,
+			srcAccessMask       = {.TRANSFER_WRITE},
+			dstAccessMask       = {.SHADER_READ},
+			buffer              = r.resources.font_device_buffer,
+			size                = vk.DeviceSize(vk.WHOLE_SIZE),
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		}
-		vk.CmdPipelineBarrier(one_time_cb.cmd, {.TRANSFER}, {.VERTEX_SHADER, .FRAGMENT_SHADER}, {}, 0, nil, 1, &barrier, 0, nil)
+		vk.CmdPipelineBarrier(
+			one_time_cb.cmd,
+			{.TRANSFER},
+			{.VERTEX_SHADER, .FRAGMENT_SHADER},
+			{},
+			0,
+			nil,
+			1,
+			&barrier,
+			0,
+			nil,
+		)
 	}
 	upload_result := vk_one_time_cmd_buffer_end(&one_time_cb)
 	if upload_result != .SUCCESS {
@@ -3227,7 +3629,7 @@ vulkan11_font_load :: proc(
 
 
 @(private)
-vulkan11_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
+vulkan11_update_swapchain :: proc(r: ^Vulkan11_Renderer) -> Renderer_Error {
 	size, platform_err := r.platform.get_framebuffer_size(r.platform.user_data)
 	if platform_err.message != "" || platform_err.result != .SUCCESS {
 		return renderer_error(
@@ -3260,7 +3662,11 @@ vulkan11_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 		)
 	}
 	caps: vk.SurfaceCapabilitiesKHR
-	capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps)
+	capabilities_result := vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(
+		r.gpu.physical,
+		r.surface,
+		&caps,
+	)
 	if capabilities_result != .SUCCESS {
 		return renderer_error(
 			.Presentation,
@@ -3301,7 +3707,12 @@ vulkan11_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 		render_pass: vk.RenderPass
 		res := vulkan11_render_pass_create(r.gpu.device, format.format, &render_pass)
 		if res != .SUCCESS {
-			return renderer_error(.Presentation, .Vulkan_Failure, "render pass recreation failed", vk_result(res))
+			return renderer_error(
+				.Presentation,
+				.Vulkan_Failure,
+				"render pass recreation failed",
+				vk_result(res),
+			)
 		}
 		res = vulkan11_pipeline_create(r, render_pass, &layout, &pipeline)
 		if res != .SUCCESS {
@@ -3322,14 +3733,23 @@ vulkan11_update_swapchain :: proc(r: ^Renderer) -> Renderer_Error {
 		r.pipeline, r.pipeline_layout = pipeline, layout
 	}
 	r.gpu.surface_format = format
-	swapchain_error := swapchain_context_init(&r.swapchain, &r.gpu, r.surface, caps, r.render_pass, i32(size.x), i32(size.y), allocator = r.allocator)
+	swapchain_error := vulkan11_swapchain_context_init(
+		&r.swapchain,
+		&r.gpu,
+		r.surface,
+		caps,
+		r.render_pass,
+		i32(size.x),
+		i32(size.y),
+		allocator = r.resources_allocator,
+	)
 	if swapchain_error.category != .None do return swapchain_error
 	r.swapchain.needs_update = false
 	return {}
 }
 
 @(private)
-vulkan11_pixel_scissor :: proc(r: ^Renderer, logical: vk.Rect2D) -> vk.Rect2D {
+vulkan11_pixel_scissor :: proc(r: ^Vulkan11_Renderer, logical: vk.Rect2D) -> vk.Rect2D {
 	extent := r.swapchain.create_info.imageExtent
 	sx := f64(extent.width) / f64(max(1, r.window.width))
 	sy := f64(extent.height) / f64(max(1, r.window.height))
@@ -3346,6 +3766,4 @@ vulkan11_pixel_scissor :: proc(r: ^Renderer, logical: vk.Rect2D) -> vk.Rect2D {
 		i64(extent.height),
 	)
 	return {offset = {i32(left), i32(top)}, extent = {u32(right - left), u32(bottom - top)}}
-}
-
 }

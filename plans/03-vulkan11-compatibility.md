@@ -2,47 +2,38 @@
 
 ## Status
 
-`in-progress` — The build-selected Vulkan 1.1 backend, isolated state, conventional
+`complete` — Stage-3 implementation and validation on the available Linux/GLFW
+GTX 1070 configuration are complete. The Vulkan 1.1 backend owns conventional
 render passes, legacy synchronization, frame-owned storage-buffer chunks,
-persistent texture descriptors/growable pools, ordered batching, and public API
-dispatch are implemented. Public drawing procedures live in `reify_drawing.odin`;
-facade performance accounting/resource error handling surround backend-only calls.
-Font layout/records and color conversion are shared;
-GPU orchestration, uploads, batching, and capture remain backend-owned. Separate
-SPIR-V 1.3 tooling validates the compatibility shader with only `Shader` capability.
+persistent texture descriptors/growable pools, ordered batching, and uploads.
+Its SPIR-V 1.3 shader requires only the `Shader` capability.
 
-Available Linux/GLFW GTX 1070 validation covers both backends, lifecycle/resource
-failures, pool growth, and forced 17-instance chunks. The representative parity
-scene produces byte-identical readback images on both backends. Core package,
-GLFW demo, and SDL example compile checks pass with each build selection. All
-16 Vulkan 1.3 and 12 Vulkan 1.1 package tests pass; integration suites pass 34 and
-31 tests respectively, including synchronization validation with no reported
-errors. The 31-test Vulkan 1.1 suite also passes with forced 17-instance chunks;
-all three shader-audit tests pass. CPU batch-cost measurements/reproduction are in
-README. The compatibility delivery gate remains open: an actual older Vulkan
-1.1/1.2 driver/device is not
-available. AMD, Intel, Windows, and separate-family real-device paths are also
-unverified; API 1.1 requests on this NVIDIA driver do not establish that coverage.
+Public drawing procedures, font records/layout, color conversion, and the common
+`Renderer` base struct live in `reify.odin`. Both concrete backends embed this base
+first with `using`. Their constant `Renderer_Backend_Interface` tables accept
+`^Renderer` and hold concrete procedures directly through Odin subtype polymorphism.
+`renderer_new(info, allocator)` allocates the build-selected concrete storage;
+the facade dispatches through `backend_type`. `renderer_free` releases GPU state
+and storage. The facade preserves the storage allocator across backend cleanup.
+GPU orchestration, uploads, batching, and capture remain backend-owned.
 
-### Separate initial checkpoint: Renderer/state split
+Available validation covers both backends, initialization/resource failures,
+allocation rollback, repeated lifetimes, resize/minimize, descriptor-pool growth,
+and forced 17-instance Vulkan 1.1 chunks. The representative parity scene produces
+byte-identical readback images. Package and integration suites, GLFW demo and SDL
+example compile checks, and shader-audit tests pass. Integration runs include
+core and synchronization validation. CPU batch-cost measurements/reproduction
+are in README.
 
-This checkpoint preserves the Vulkan 1.3 backend and does not add `vulkan11`
-selection. The facade owns loader lifetime, the active-renderer reservation,
-initialization flags, failure cleanup dispatch, and the final public reset.
-Backend cleanup releases its GPU state without resetting common ownership.
-The build-selected state is embedded through a compile-time alias; Odin `using`
-promotion preserves existing backend field access without introducing a
-procedure table or shared Vulkan orchestration layer. Drawing, resource upload,
-font layout, batching, and submission remain in the Vulkan 1.3 implementation.
+Current verification totals: 26 Vulkan 1.1 and 30 Vulkan 1.3 package tests;
+46 and 49 tests respectively with the opt-in integration suites. The Vulkan 1.1
+integration run forces 17-instance chunks. All three shader-audit tests pass.
 
-Checkpoint verification: core package, GLFW demo, and SDL example compile
-checks pass; all 15 package tests and all 31 tests with the opt-in integration
-suite pass. The integration suite also passes with synchronization validation
-enabled and no reported validation errors on the available Linux/NVIDIA GTX 1070
-configuration. Tests cover backend-only cleanup, preflight state preservation,
-initialization rollback, repeated lifetimes, resize/minimize, uploads, and
-resource/submission failures. Windows and other GPUs are not verified by this
-checkpoint. A clean adversarial review is required before checkpoint delivery.
+Completion is not a hardware compatibility certification. An actual older Vulkan
+1.1/1.2 driver/device, AMD, Intel, Windows, and separate graphics/present queue
+families remain unverified follow-up coverage. Requesting API 1.1 on the available
+modern NVIDIA driver does not establish those results. Runtime Auto/selection
+remains stage 4 and is not implemented here.
 
 Implementation stage 3, after [02-vulkan13-robustness.md](02-vulkan13-robustness.md).
 See [00-roadmap.md](00-roadmap.md) for shared decisions and gates.
@@ -53,15 +44,15 @@ Add an alternate `vulkan11` backend for older Windows/Linux gaming hardware.
 Select it through the existing compile-time `Renderer_Backend` config:
 
 ```sh
-odin run demo -define:Renderer_Backend=vulkan11
+odin run demo -out:/tmp/opencode/reify11-demo -define:Renderer_Backend=vulkan11
 ```
 
-This document records the stage-3 design and its remaining validation gate.
+This document records the completed stage-3 design and remaining hardware coverage.
 Retain only Reify-owned `vulkan13` and `vulkan11` backends; retire SDL GPU.
 Applications should use the same public drawing, texture, font, camera, and
 scissor APIs with either Vulkan backend. The command above describes an interim
-build option; [04-renderer-selection.md](04-renderer-selection.md) defines the intended
-runtime `auto` / `vulkan13` / `vulkan11` configuration and supersedes that option.
+build option; [04-renderer-selection.md](04-renderer-selection.md) plans runtime
+`auto` / `vulkan13` / `vulkan11` configuration to replace it in a later stage.
 
 Preserve the useful parts of the “No Graphics API” approach: flat instance data,
 vertex pulling, few pipelines, and bulk uploads. The compatibility backend trades
@@ -95,30 +86,36 @@ The relevant starting points are `reify.odin` (config and dispatch),
 `reify_vulkan13.odin` (renderer state and implementation),
 `reify_vulkan_helpers.odin`, and `assets/quad_vulkan13.slang`.
 
-1. Accept `vulkan11` in config validation and add explicit dispatch branches for
-   every public operation. SDL GPU dispatch is already removed in stage 1.
+1. Accept `vulkan11` in config validation and select its `Renderer_Backend_Interface`
+   procedure table for public dispatch. SDL GPU dispatch is removed in stage 1.
    Include the internal loader lifecycle,
    instance access, surface setup, resource loading, metrics, frame submission,
    resize, vsync, logging, and destruction.
-2. Move the public `Renderer` declaration into `reify.odin`. Keep common
-   allocator/platform ownership, lifecycle flags, logical dimensions, and
-   performance statistics there. Extract the Vulkan instance/device/queue context,
+2. Keep the public `Renderer` base struct and common declarations in
+   `reify.odin`. Keep common allocator/platform ownership, lifecycle flags,
+   logical dimensions, and performance statistics in `Renderer`, embedded
+   first with `using` in each backend state. Backend procedures take their own
+   state pointers and populate `Renderer_Backend_Interface` base-pointer entries
+   directly, without explicit casts or adapters.
+   Extract the Vulkan instance/device/queue context,
    backend capabilities and limits, VMA allocator, surface handle, GPU resources,
    swapchain, frame contexts/index, descriptors, pipelines, command pool, shader
-   module, and pending-upload state into `Vulkan13_Renderer_State` in
-   `reify_vulkan13.odin`; add an independent `Vulkan11_Renderer_State` in
-   `reify_vulkan11.odin`. Initially embed only the build-selected backend state;
-   stage 4 introduces tagged runtime state. Reuse public handle/value types.
-3. Keep the interface small: the existing public API and explicit backend dispatch
-   are the facade. Do not introduce a general graphics abstraction, procedure
-   table, or shared Vulkan orchestration layer. Almost entirely parallel Vulkan
+   module, and pending-upload state into `Vulkan13_Rendererer` in
+   `reify_vulkan13.odin` and independent `Vulkan11_Renderer` storage in
+   `reify_vulkan11.odin`. `renderer_new` allocates only the build-selected concrete
+   state and returns its base pointer. Plain `Renderer` values are not sufficient
+   backend storage. Stage 4 introduces runtime selection. Reuse public handle/value
+   types.
+3. Keep the interface focused on the existing renderer operations. Each backend
+   owns its constant procedure table; a table must be paired with matching
+   concrete storage. Do not introduce a general graphics abstraction or shared
+   Vulkan orchestration layer. Almost entirely parallel Vulkan
    1.1 functions are acceptable when they make feature use and ownership clearer.
-   Share only demonstrably backend-neutral logic where useful: pure shape
-   generation, instance records, color conversion, font parsing/layout, and image
-   decoding. Several such definitions currently live in `reify_vulkan13.odin`;
-   move them deliberately into cohesive shared slices, not merely to avoid
-   duplication. Shared font layout should consume font data rather than reach
-   through backend resource state. Keep batching, chunk indexing, uploads, and
+   Share demonstrably backend-neutral records, color conversion, and font layout
+   in `reify.odin`. Font parsing/image decoding and their resource orchestration
+   remain in the backend loading procedures. Shared font layout consumes font
+   data rather than reaching through backend resource state. Keep batching,
+   chunk indexing, uploads, and
    submission backend-owned; do not call Vulkan 1.3 initialization or drawing
    routines from the new backend.
 4. Audit helpers before reuse. In particular, the current pipeline helper uses
@@ -144,21 +141,27 @@ surface formats/present modes, and required format features. Prefer a combined
 graphics/present queue; support separate families with concurrent swapchain
 sharing initially to avoid excluding otherwise suitable hardware.
 
-Use `init(renderer, info)` and the surface callbacks established in stage 1:
+Use `renderer_new(info, allocator)` and the surface callbacks established in stage 1:
 instance, surface, compatible physical device/queues, then device/resources.
 Do not add a public `set_surface` step or revive manual loader initialization.
-The implemented stage-1 descriptor is `Renderer_Init_Info` with `platform`,
-`logical_size`, allocator options, and `config.vsync`. Both `init` and `present`
-return `bool`; log detailed failure diagnostics through `context.logger`.
-Resource loading returns `(handle, bool)`, without caller-facing error records.
+The descriptor is `Renderer_Init_Info` with `platform`, `logical_size`,
+`resources_allocator`, `temp_allocator`, and `config.vsync`. The constructor
+returns `(^Renderer, bool)` and logs initialization failures through
+`context.logger`; failure returns `nil, false` after cleanup. Pair successful
+construction with `renderer_free(renderer)` and keep the host window/callback
+state alive until it returns. The storage allocator and resource allocator have
+independent lifetimes and must remain valid for their allocations.
+`present` returns `bool`: zero-size windows and out-of-date acquisition defer
+presentation and return `true`, not a fatal failure. `texture_load` returns
+`(Texture_Handle, bool)`; `font_load` returns `(Font_Face_Handle, Font_Atlas_Error)`
+with a nil error on success. Failed resource handles have index `-1`.
 Resource loading is valid after successful initialization, including when a
 minimized window has deferred swapchain creation.
 
 On failure, report the selected backend and concrete missing capability, clean
-up partial state, and return `false`. The selection
-manager may try another candidate in Auto mode; explicit selection must not
-silently switch backends. Keep retry decisions internal and preserve the public
-boolean/logging contract from the platform plan.
+up partial state, and return `nil, false`. Device-candidate retries stay inside the
+selected backend; explicit selection never silently switches backends. Auto-mode
+backend fallback belongs to the future selection manager, not stage 3.
 
 ## Shader and resource layout
 
@@ -238,7 +241,7 @@ constraints and are not required for the first implementation.
 Add a distinct compatibility shader/artifact, for example
 `assets/quad_vulkan11.slang` and `assets/quad_vulkan11.spv`. Share pure shading
 functions and record definitions where practical; isolate binding declarations
-and instance access. 
+and instance access.
 
 Update both shader compile scripts to emit an explicit Vulkan 1.1-compatible
 SPIR-V target (no newer than SPIR-V 1.3). Validate with
@@ -252,23 +255,20 @@ overwriting the Vulkan 1.3 push-constant layout.
 
 ## Implementation sequence and acceptance
 
-1. **Selection and initialization:** config dispatch, isolated state, device
+1. **Complete — Selection and initialization:** config dispatch, isolated state, device
    checks, surface-dependent selection, and a clear-only Vulkan 1.1 frame.
-2. **Geometry:** instance storage buffers, compatibility shader/tooling, index
+2. **Complete — Geometry:** instance storage buffers, compatibility shader/tooling, index
    handling, solid shapes, camera/screen mode, and scissors.
-3. **Textures and fonts:** persistent descriptors, ordered texture batches,
+3. **Complete — Textures and fonts:** persistent descriptors, ordered texture batches,
    uploads, MSDF text, resource lifetime, and limit-aware chunking.
-4. **Lifecycle and parity:** resize/minimize, vsync, teardown, diagnostics,
+4. **Complete — Lifecycle and parity:** resize/minimize, vsync, teardown, diagnostics,
    performance counters, demo selection, and build/run documentation.
 
-Acceptance checks:
+Acceptance checks completed on the available Linux/NVIDIA path:
 
 - Build the demo with `Renderer_Backend=vulkan11` and validation enabled; also
   compile the existing `vulkan13` backend for regressions. Once runtime selection
   lands, exercise both options in the same executable.
-- Run on an actual older Vulkan 1.1/1.2 device/driver plus modern NVIDIA, AMD,
-  and Intel hardware where available. Merely requesting API 1.1 on a modern GPU
-  does not prove the absence of optional-feature dependencies.
 - Compare representative scenes across both Vulkan backends: overlapping
   translucent sprites, interleaved textures, additive content, all shapes, MSDF
   fonts, UV rectangles, rotations, camera transforms, and scissor boundaries.
@@ -280,6 +280,10 @@ Acceptance checks:
 - Measure texture-alternating scenes as well as atlas-friendly scenes. Report
   increased draw calls and CPU cost explicitly; visual parity and broader device
   compatibility take priority over matching bindless throughput.
+
+Hardware follow-up: run on an actual older Vulkan 1.1/1.2 device/driver and AMD,
+Intel, Windows, and separate-queue-family configurations when available. These
+remain unverified; API 1.1 requests on a modern NVIDIA driver are not substitutes.
 
 ## References
 

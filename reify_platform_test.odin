@@ -11,8 +11,9 @@ import vk "vendor:vulkan"
 platform_lifecycle :: proc(t: ^testing.T) {
 	sync.mutex_lock(&platform_test_dispatch_mutex)
 	defer sync.mutex_unlock(&platform_test_dispatch_mutex)
-	r := new(Renderer)
+	r := new(Test_Renderer)
 	defer free(r)
+	r.backend_type = RENDERER_BACKEND_TYPE
 	state: Platform_Test_State
 	info := Renderer_Init_Info {
 		platform     = test_platform(&state),
@@ -28,17 +29,18 @@ platform_lifecycle :: proc(t: ^testing.T) {
 		case 2:
 			bad.platform.vulkan.destroy_surface = nil
 		}
-		err := renderer_init(r, bad)
+		err := renderer_init(r, RENDERER_BACKEND_TYPE, bad)
 		testing.expect_value(t, err.category, Renderer_Error_Category.Missing_Capability)
 		testing.expect(t, active_renderer == nil && !r.loader_owned)
 	}
-	other := new(Renderer)
+	other := new(Test_Renderer)
 	defer free(other)
+	other.backend_type = RENDERER_BACKEND_TYPE
 	sync.atomic_store(&active_renderer, r)
-	occupied := renderer_init(other, info)
+	occupied := renderer_init(other, RENDERER_BACKEND_TYPE, info)
 	testing.expect_value(t, occupied.category, Renderer_Error_Category.Invalid_State)
 	testing.expect(t, active_renderer == r && !other.loader_owned)
-	destroy(other)
+	renderer_destroy(other)
 	testing.expect(t, active_renderer == r)
 	sync.atomic_store(&active_renderer, cast(^Renderer)nil)
 	for mode in Platform_Test_Mode {
@@ -48,7 +50,7 @@ platform_lifecycle :: proc(t: ^testing.T) {
 		}
 		if mode == .Missing_Extension do state.extensions[0] = "VK_REIFY_missing_extension"
 		if mode == .Nil_Extension do state.extensions[0] = nil
-		err := renderer_init(r, info)
+		err := renderer_init(r, RENDERER_BACKEND_TYPE, info)
 		testing.expect(t, err.category != .None)
 		testing.expect(t, active_renderer == nil && !r.loader_owned && r.gpu.instance == {})
 		testing.expect(t, len(r.platform.vulkan.required_instance_extensions) == 0)
@@ -62,7 +64,9 @@ platform_lifecycle :: proc(t: ^testing.T) {
 			state.diagnostic = {}
 			testing.expect_value(t, error_message(&err), "injected surface failure")
 		} else {
-			if mode == .No_Present_Device do testing.expect_value(t, err.category, Renderer_Error_Category.No_Present_Device)
+			if mode == .No_Present_Device {
+				testing.expect_value(t, err.category, Renderer_Error_Category.No_Present_Device)
+			}
 			testing.expect_value(t, state.created, 1)
 			testing.expect_value(t, state.destroyed, 1)
 			if mode == .Resource_Failure do testing.expect_value(t, err.stage, Renderer_Error_Stage.Resources)
@@ -77,7 +81,7 @@ platform_lifecycle :: proc(t: ^testing.T) {
 			}
 			testing.expect(t, state.instance_alive_at_destroy)
 		}
-		destroy(r)
+		renderer_destroy(r)
 		testing.expect(t, state.destroyed <= 1)
 	}
 }
@@ -85,8 +89,9 @@ platform_lifecycle :: proc(t: ^testing.T) {
 // Logical size changes cannot schedule or alter pixel presentation resources.
 @(test)
 platform_logical_resize :: proc(t: ^testing.T) {
-	r := new(Renderer)
+	r := new(Test_Renderer)
 	defer free(r)
+	r.backend_type = RENDERER_BACKEND_TYPE
 	r.window.width, r.window.height = 800, 600
 	r.window.projection = vk_ortho_projection(0, 800, 0, 600, -1, 1)
 	r.swapchain.handle = vk.SwapchainKHR(123)
@@ -113,8 +118,9 @@ platform_logical_resize :: proc(t: ^testing.T) {
 
 @(test)
 platform_scissor_scaling :: proc(t: ^testing.T) {
-	r := new(Renderer)
+	r := new(Test_Renderer)
 	defer free(r)
+	r.backend_type = RENDERER_BACKEND_TYPE
 	r.window.width, r.window.height = 800, 600
 	r.swapchain.create_info.imageExtent = {1600, 900}
 	testing.expect_value(
@@ -153,8 +159,8 @@ Platform_Test_State :: struct {
 platform_instance_layers :: proc(t: ^testing.T) {
 	sync.mutex_lock(&platform_test_dispatch_mutex)
 	defer sync.mutex_unlock(&platform_test_dispatch_mutex)
-	if !testing.expect(t, renderer_loader_init()) do return
-	defer renderer_loader_shutdown()
+	if !testing.expect(t, loader_init()) do return
+	defer loader_shutdown()
 	saved_layers := vk.EnumerateInstanceLayerProperties
 	saved_create := vk.CreateInstance
 	defer {
@@ -163,21 +169,25 @@ platform_instance_layers :: proc(t: ^testing.T) {
 	}
 	vk.EnumerateInstanceLayerProperties = test_instance_layers
 	vk.CreateInstance = test_instance_request
-	r := new(Renderer)
+	r := new(Test_Renderer)
 	defer free(r)
+	r.backend_type = RENDERER_BACKEND_TYPE
 	for mode in Instance_Layer_Test_Mode {
 		instance_layer_test = {
 			mode = mode,
 		}
-		err := gpu_init(r, []cstring{vk.KHR_SURFACE_EXTENSION_NAME, vk.KHR_SURFACE_EXTENSION_NAME})
+		err := test_gpu_init(
+			r,
+			[]cstring{vk.KHR_SURFACE_EXTENSION_NAME, vk.KHR_SURFACE_EXTENSION_NAME},
+		)
 		testing.expect_value(t, err.stage, Renderer_Error_Stage.Instance)
 		testing.expect_value(
 			t,
 			err.category,
-			Renderer_Error_Category.Allocation_Failure if ENABLE_VK_VALIDATION && (mode == .Count_Failure || mode == .Properties_Failure) else Renderer_Error_Category.Vulkan_Failure,
+			Renderer_Error_Category.Allocation_Failure if PLATFORM_TEST_VALIDATION && (mode == .Count_Failure || mode == .Properties_Failure) else Renderer_Error_Category.Vulkan_Failure,
 		)
 		testing.expect(t, r.gpu.instance == {})
-		if ENABLE_VK_VALIDATION && (mode == .Count_Failure || mode == .Properties_Failure) {
+		if PLATFORM_TEST_VALIDATION && (mode == .Count_Failure || mode == .Properties_Failure) {
 			testing.expect_value(t, err.result, Renderer_Result.Out_Of_Host_Memory)
 			testing.expect_value(t, error_message(&err), "instance layer enumeration failed")
 			testing.expect(t, !instance_layer_test.create_called)
@@ -189,16 +199,20 @@ platform_instance_layers :: proc(t: ^testing.T) {
 			testing.expect_value(
 				t,
 				instance_layer_test.layer_count,
-				u32(1) if ENABLE_VK_VALIDATION && mode == .Present else u32(0),
+				u32(1) if PLATFORM_TEST_VALIDATION && mode == .Present else u32(0),
 			)
-			testing.expect_value(t, instance_layer_test.calls, 2 if ENABLE_VK_VALIDATION else 0)
+			testing.expect_value(
+				t,
+				instance_layer_test.calls,
+				2 if PLATFORM_TEST_VALIDATION else 0,
+			)
 			if instance_layer_test.layer_count == 1 do testing.expect(t, instance_layer_test.validation_name)
 		}
 	}
 	instance_layer_test = {
 		mode = .Missing,
 	}
-	err := gpu_init(r, nil)
+	err := test_gpu_init(r, nil)
 	testing.expect_value(t, err.result, Renderer_Result.Initialization_Failed)
 	testing.expect_value(t, instance_layer_test.extension_count, u32(1))
 }
@@ -208,6 +222,16 @@ Instance_Layer_Test_Mode :: enum {
 	Missing,
 	Count_Failure,
 	Properties_Failure,
+}
+
+PLATFORM_TEST_VALIDATION :: bool(#config(Reify_Enable_Validation, false))
+
+test_gpu_init :: proc(r: ^Test_Renderer, extensions: []cstring) -> Renderer_Error {
+	when RENDERER_BACKEND_TYPE == .Vulkan_1_3 {
+		return vulkan13_gpu_init(r, extensions)
+	} else when RENDERER_BACKEND_TYPE == .Vulkan_1_1 {
+		return vulkan11_gpu_init(r, extensions)
+	}
 }
 @(private)
 platform_test_dispatch_mutex: sync.Mutex
@@ -250,7 +274,9 @@ test_instance_request :: proc "system" (
 	instance_layer_test.create_called = true
 	instance_layer_test.extension_count = info.enabledExtensionCount
 	instance_layer_test.layer_count = info.enabledLayerCount
-	if info.enabledLayerCount == 1 do instance_layer_test.validation_name = string(info.ppEnabledLayerNames[0]) == "VK_LAYER_KHRONOS_validation"
+	if info.enabledLayerCount == 1 {
+		instance_layer_test.validation_name = string(info.ppEnabledLayerNames[0]) == "VK_LAYER_KHRONOS_validation"
+	}
 	return .ERROR_INITIALIZATION_FAILED
 }
 
@@ -274,7 +300,9 @@ test_platform :: proc(state: ^Platform_Test_State) -> Platform_Interface {
 }
 
 @(private)
-test_framebuffer :: proc(data: rawptr) -> ([2]int, Platform_Error) {return {800, 600}, {}}
+test_framebuffer :: proc(data: rawptr) -> ([2]int, Platform_Error) {
+	return {800, 600}, {}
+}
 
 @(private)
 test_surface_create :: proc(
@@ -318,7 +346,7 @@ test_surface_create :: proc(
 		vk.CreateDevice = test_device_failure
 	case .Incompatible_First, .Retry_Candidate:
 		vk.EnumeratePhysicalDevices = test_multiple_devices
-		when RENDERER_BACKEND == "vulkan13" {
+		when RENDERER_BACKEND_TYPE == .Vulkan_1_3 {
 			vk.GetPhysicalDeviceFeatures2 = test_candidate_features
 		} else {
 			vk.GetPhysicalDeviceProperties2 = test_candidate_properties
@@ -354,7 +382,9 @@ test_enumeration_failure :: proc "system" (
 	instance: vk.Instance,
 	count: ^u32,
 	devices: [^]vk.PhysicalDevice,
-) -> vk.Result {return .ERROR_OUT_OF_HOST_MEMORY}
+) -> vk.Result {
+	return .ERROR_OUT_OF_HOST_MEMORY
+}
 @(private)
 test_surface_supported :: proc "system" (
 	device: vk.PhysicalDevice,
@@ -371,7 +401,9 @@ test_device_failure :: proc "system" (
 	info: ^vk.DeviceCreateInfo,
 	allocations: ^vk.AllocationCallbacks,
 	device: ^vk.Device,
-) -> vk.Result {return .ERROR_OUT_OF_DEVICE_MEMORY}
+) -> vk.Result {
+	return .ERROR_OUT_OF_DEVICE_MEMORY
+}
 
 @(private)
 test_resource_proc :: proc "system" (device: vk.Device, name: cstring) -> vk.ProcVoidFunction {
@@ -432,14 +464,17 @@ test_candidate_features :: proc "system" (
 ) {
 	test_saved_features(pd, features)
 	test_candidate_queries += 1
-	when RENDERER_BACKEND == "vulkan13" {
+	when RENDERER_BACKEND_TYPE == .Vulkan_1_3 {
 		if test_candidate_mode == .Incompatible_First && test_candidate_queries == 1 {
 			(cast(^vk.PhysicalDeviceVulkan13Features)features[0].pNext).dynamicRendering = false
 		}
 	}
 }
 
-test_candidate_properties :: proc "system" (pd: vk.PhysicalDevice, props: [^]vk.PhysicalDeviceProperties2) {
+test_candidate_properties :: proc "system" (
+	pd: vk.PhysicalDevice,
+	props: [^]vk.PhysicalDeviceProperties2,
+) {
 	test_saved_properties(pd, props)
 	test_candidate_queries += 1
 	if test_candidate_mode == .Incompatible_First && test_candidate_queries == 1 {
@@ -447,8 +482,8 @@ test_candidate_properties :: proc "system" (pd: vk.PhysicalDevice, props: [^]vk.
 	}
 }
 
-test_pixel_scissor :: proc(r: ^Renderer, scissor: vk.Rect2D) -> vk.Rect2D {
-	when RENDERER_BACKEND == "vulkan13" {
+test_pixel_scissor :: proc(r: ^Test_Renderer, scissor: vk.Rect2D) -> vk.Rect2D {
+	when RENDERER_BACKEND_TYPE == .Vulkan_1_3 {
 		return vulkan13_pixel_scissor(r, scissor)
 	} else {
 		return vulkan11_pixel_scissor(r, scissor)

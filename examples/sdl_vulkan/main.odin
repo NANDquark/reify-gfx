@@ -22,15 +22,12 @@ main :: proc() {
 	)
 	if window == nil do panic(string(sdl.GetError()))
 	defer sdl.DestroyWindow(window)
-	r := new(re.Renderer)
-	defer free(r)
-	ok := re.init(
-		r,
+	r, ok := re.renderer_new(
 		{platform = sdl_platform(window), logical_size = {800, 600}, config = {vsync = true}},
 	)
 	if !ok do return
+	defer re.renderer_free(r)
 	when EXAMPLE_SMOKE_TEST {assert(len(r.platform.vulkan.required_instance_extensions) == 0)}
-	defer re.destroy(r)
 	frame_limit :: int(#config(Example_Frames, 0))
 	frames := 0
 	running := true

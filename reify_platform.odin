@@ -1,7 +1,7 @@
 package reify
 
-import "core:mem"
 import "core:log"
+import "core:mem"
 import vk "vendor:vulkan"
 
 // Callbacks use the calling thread's Odin context and must not reenter the renderer.
@@ -39,11 +39,11 @@ Platform_Error :: struct {
 }
 
 Renderer_Init_Info :: struct {
-	platform:       Platform_Interface,
-	logical_size:   [2]int,
-	allocator:      mem.Allocator,
-	temp_allocator: mem.Allocator,
-	config:         Renderer_Config,
+	platform:            Platform_Interface,
+	logical_size:        [2]int,
+	resources_allocator: mem.Allocator,
+	temp_allocator:      mem.Allocator,
+	config:              Renderer_Config,
 }
 
 Renderer_Config :: struct {
@@ -58,11 +58,8 @@ Negotiated_Limits :: struct {
 
 effective_limits :: proc(r: ^Renderer) -> Negotiated_Limits {
 	if r == nil || !r.initialized do return {}
-	when RENDERER_BACKEND == "vulkan13" {
-		return r.backend.gpu.limits
-	} else when RENDERER_BACKEND == "vulkan11" {
-		return r.backend.gpu.limits
-	}
+	backend := renderer_get_backend(r)
+	return backend.effective_limits(r)
 }
 
 Memory_Heap_Summary :: struct {
@@ -78,13 +75,14 @@ Memory_Summary :: struct {
 // Budget telemetry is advisory; allocator_bytes includes allocator block overhead.
 memory_summary :: proc(r: ^Renderer) -> Memory_Summary {
 	if r == nil || !r.initialized do return {}
-	when RENDERER_BACKEND == "vulkan13" {
-		vulkan13_refresh_memory(&r.backend.gpu)
-		return vulkan13_memory_summary(&r.backend.gpu)
-	} else when RENDERER_BACKEND == "vulkan11" {
-		vulkan11_refresh_memory(&r.backend.gpu)
-		return vulkan11_memory_summary(&r.backend.gpu)
-	}
+	backend := renderer_get_backend(r)
+	return backend.memory_summary(r)
+}
+
+debug_capture_ppm :: proc(r: ^Renderer, path: string) -> bool {
+	if r == nil || !r.initialized do return {}
+	backend := renderer_get_backend(r)
+	return backend.debug_capture_ppm(r, path)
 }
 
 @(private)
@@ -144,10 +142,10 @@ error_message :: proc(err: ^Renderer_Error) -> string {
 }
 
 @(private)
-renderer_log_error :: proc(err: Renderer_Error) {
+renderer_log_error :: proc(r: ^Renderer) {
+	err := r.last_error
 	if err.category == .None do return
-	err := err
-	log.errorf("reify %s %v: %v (%v, %v)", RENDERER_BACKEND, err.stage, error_message(&err), err.category, err.result)
+	log.errorf("reify %v: %v (%v, %v)", err.stage, error_message(&err), err.category, err.result)
 }
 
 @(private)

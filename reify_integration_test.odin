@@ -9,11 +9,13 @@ import "core:os"
 import "core:sync"
 import "core:testing"
 import "core:time"
+import "lib/vma"
 import "vendor:glfw"
 import vk "vendor:vulkan"
-import "lib/vma"
 
 when bool(#config(Reify_Integration_Test, false)) {
+	INTEGRATION_VISIBLE_WINDOWS :: bool(#config(Reify_Integration_Visible_Windows, false))
+
 	@(test)
 	integration_texture_batch_cost :: proc(t: ^testing.T) {
 		f := integration_fixture_make(t)
@@ -45,11 +47,20 @@ when bool(#config(Reify_Integration_Test, false)) {
 				assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
 				if frame >= 2 {
 					build_ms += f64(time.duration_milliseconds(time.diff(build_start, build_end)))
-					present_ms += f64(time.duration_milliseconds(time.diff(build_end, present_end)))
+					present_ms += f64(
+						time.duration_milliseconds(time.diff(build_end, present_end)),
+					)
 					draws += r.perf.draw_calls
 				}
 			}
-			fmt.printf("Batch cost %s alternating=%v: 10000 sprites, %.0f draws/frame, CPU build %.3fms/frame, present %.3fms/frame (8 samples after warmup)\n", RENDERER_BACKEND, alternating, f64(draws) / 8, build_ms / 8, present_ms / 8)
+			fmt.printf(
+				"Batch cost %s alternating=%v: 10000 sprites, %.0f draws/frame, CPU build %.3fms/frame, present %.3fms/frame (8 samples after warmup)\n",
+			RENDERER_BACKEND_STR,
+				alternating,
+				f64(draws) / 8,
+				build_ms / 8,
+				present_ms / 8,
+			)
 		}
 	}
 
@@ -62,7 +73,10 @@ when bool(#config(Reify_Integration_Test, false)) {
 		assert(integration_renderer_init(f))
 		r := &f.renderer
 		caps: vk.SurfaceCapabilitiesKHR
-		assert(vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps) == .SUCCESS)
+		assert(
+			vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.gpu.physical, r.surface, &caps) ==
+			.SUCCESS,
+		)
 		if !testing.expect(t, .TRANSFER_SRC in caps.supportedUsageFlags, "Parity readback requires optional surface transfer-source support") do return
 		parity_saved_swapchain = vk.CreateSwapchainKHR
 		vk.CreateSwapchainKHR = integration_parity_swapchain
@@ -76,7 +90,12 @@ when bool(#config(Reify_Integration_Test, false)) {
 			parity_buffer, parity_allocation = {}, nil
 			parity_width, parity_height, parity_mapped = 0, 0, nil
 		}
-		red, red_ok := texture_load(r, []Color{{255, 0, 0, 180}, {0, 0, 255, 255}, {0, 255, 0, 150}, {255, 255, 255, 255}}, 2, 2)
+		red, red_ok := texture_load(
+			r,
+			[]Color{{255, 0, 0, 180}, {0, 0, 255, 255}, {0, 255, 0, 150}, {255, 255, 255, 255}},
+			2,
+			2,
+		)
 		green, green_ok := texture_load(r, []Color{{0, 255, 0, 160}}, 1, 1)
 		assert(red_ok && green_ok)
 		font := integration_font_load(f)
@@ -90,7 +109,15 @@ when bool(#config(Reify_Integration_Test, false)) {
 			begin_screen_mode(r)
 			draw_image(r, red, {30, 30}, scale = {90, 90})
 			draw_image(r, green, {110, 50}, scale = {140, 120}, alpha = 0.7)
-			draw_image(r, red, {140, 70}, scale = {70, 70}, rotation = 0.4, uv_rect = {0.5, 0, 0.5, 1}, is_additive = true)
+			draw_image(
+				r,
+				red,
+				{140, 70},
+				scale = {70, 70},
+				rotation = 0.4,
+				uv_rect = {0.5, 0, 0.5, 1},
+				is_additive = true,
+			)
 			draw_triangle(r, {270, 30}, {380, 110}, {250, 150}, {255, 150, 30, 180})
 			draw_line(r, {300, 150}, {440, 40}, 9, {80, 200, 255, 220})
 			points := [][2]f32{{400, 220}, {440, 140}, {500, 200}, {520, 130}}
@@ -106,7 +133,15 @@ when bool(#config(Reify_Integration_Test, false)) {
 			vk.FreeCommandBuffers(r.gpu.device, r.command_pool, 1, &parity_command)
 			parity_command = {}
 		}
-		assert(vma.invalidate_allocation(r.gpu.allocator, parity_allocation, 0, vk.DeviceSize(vk.WHOLE_SIZE)) == .SUCCESS)
+		assert(
+			vma.invalidate_allocation(
+				r.gpu.allocator,
+				parity_allocation,
+				0,
+				vk.DeviceSize(vk.WHOLE_SIZE),
+			) ==
+			.SUCCESS,
+		)
 		width, height := parity_width, parity_height
 		pixels := ([^]u8)(parity_mapped)[:width * height * 4]
 		nonblack := 0
@@ -117,7 +152,16 @@ when bool(#config(Reify_Integration_Test, false)) {
 		output := os.get_env("REIFY_PARITY_OUTPUT", context.allocator)
 		defer delete(output)
 		if output != "" {
-			assert(renderer_capture_write_ppm(output, pixels, width, height, r.gpu.surface_format.format == .B8G8R8A8_SRGB, false))
+			assert(
+				renderer_capture_write_ppm(
+					output,
+					pixels,
+					width,
+					height,
+					r.gpu.surface_format.format == .B8G8R8A8_SRGB,
+					false,
+				),
+			)
 		}
 	}
 
@@ -129,12 +173,22 @@ when bool(#config(Reify_Integration_Test, false)) {
 	parity_width, parity_height: int
 	parity_mapped: rawptr
 
-	integration_parity_swapchain :: proc "system" (device: vk.Device, info: ^vk.SwapchainCreateInfoKHR, allocator: ^vk.AllocationCallbacks, swapchain: ^vk.SwapchainKHR) -> vk.Result {
+	integration_parity_swapchain :: proc "system" (
+		device: vk.Device,
+		info: ^vk.SwapchainCreateInfoKHR,
+		allocator: ^vk.AllocationCallbacks,
+		swapchain: ^vk.SwapchainKHR,
+	) -> vk.Result {
 		info.imageUsage += {.TRANSFER_SRC}
 		return parity_saved_swapchain(device, info, allocator, swapchain)
 	}
 
-	integration_parity_submit :: proc "system" (queue: vk.Queue, count: u32, submits: [^]vk.SubmitInfo, fence: vk.Fence) -> vk.Result {
+	integration_parity_submit :: proc "system" (
+		queue: vk.Queue,
+		count: u32,
+		submits: [^]vk.SubmitInfo,
+		fence: vk.Fence,
+	) -> vk.Result {
 		context = integration_fixture_context(integration_active_fixture)
 		if count != 1 || submits[0].signalSemaphoreCount != 1 do return parity_saved_submit(queue, count, submits, fence)
 		r := &integration_active_fixture.renderer
@@ -148,29 +202,91 @@ when bool(#config(Reify_Integration_Test, false)) {
 			assert(vk.DeviceWaitIdle(r.gpu.device) == .SUCCESS)
 			if parity_buffer != {} do vma.destroy_buffer(r.gpu.allocator, parity_buffer, parity_allocation)
 			parity_width, parity_height = int(extent.width), int(extent.height)
-			buffer_info := vk.BufferCreateInfo{sType = .BUFFER_CREATE_INFO, size = vk.DeviceSize(parity_width * parity_height * 4), usage = {.TRANSFER_DST}}
-			allocation_info := vma.Allocation_Create_Info{usage = .Auto, flags = {.Host_Access_Random, .Mapped}, required_flags = {.HOST_VISIBLE}}
+			buffer_info := vk.BufferCreateInfo {
+				sType = .BUFFER_CREATE_INFO,
+				size  = vk.DeviceSize(parity_width * parity_height * 4),
+				usage = {.TRANSFER_DST},
+			}
+			allocation_info := vma.Allocation_Create_Info {
+				usage          = .Auto,
+				flags          = {.Host_Access_Random, .Mapped},
+				required_flags = {.HOST_VISIBLE},
+			}
 			mapped: vma.Allocation_Info
-			assert(vma.create_buffer(r.gpu.allocator, buffer_info, allocation_info, &parity_buffer, &parity_allocation, &mapped) == .SUCCESS)
+			assert(
+				vma.create_buffer(
+					r.gpu.allocator,
+					buffer_info,
+					allocation_info,
+					&parity_buffer,
+					&parity_allocation,
+					&mapped,
+				) ==
+				.SUCCESS,
+			)
 			assert(mapped.mapped_data != nil)
 			parity_mapped = mapped.mapped_data
 		}
-		allocation := vk.CommandBufferAllocateInfo{sType = .COMMAND_BUFFER_ALLOCATE_INFO, commandPool = r.command_pool, commandBufferCount = 1}
+		allocation := vk.CommandBufferAllocateInfo {
+			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+			commandPool        = r.command_pool,
+			commandBufferCount = 1,
+		}
 		assert(vk.AllocateCommandBuffers(r.gpu.device, &allocation, &parity_command) == .SUCCESS)
-		begin := vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}
+		begin := vk.CommandBufferBeginInfo {
+			sType = .COMMAND_BUFFER_BEGIN_INFO,
+			flags = {.ONE_TIME_SUBMIT},
+		}
 		assert(vk.BeginCommandBuffer(parity_command, &begin) == .SUCCESS)
 		barrier := vk.ImageMemoryBarrier {
-			sType = .IMAGE_MEMORY_BARRIER, srcAccessMask = {.COLOR_ATTACHMENT_WRITE}, dstAccessMask = {.TRANSFER_READ},
-			oldLayout = .PRESENT_SRC_KHR, newLayout = .TRANSFER_SRC_OPTIMAL,
-			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED, dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-			image = r.swapchain.images[image_index], subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+			sType = .IMAGE_MEMORY_BARRIER,
+			srcAccessMask = {.COLOR_ATTACHMENT_WRITE},
+			dstAccessMask = {.TRANSFER_READ},
+			oldLayout = .PRESENT_SRC_KHR,
+			newLayout = .TRANSFER_SRC_OPTIMAL,
+			srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+			image = r.swapchain.images[image_index],
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
 		}
-		vk.CmdPipelineBarrier(parity_command, {.COLOR_ATTACHMENT_OUTPUT}, {.TRANSFER}, {}, 0, nil, 0, nil, 1, &barrier)
-		region := vk.BufferImageCopy{imageSubresource = {aspectMask = {.COLOR}, layerCount = 1}, imageExtent = {extent.width, extent.height, 1}}
-		vk.CmdCopyImageToBuffer(parity_command, barrier.image, .TRANSFER_SRC_OPTIMAL, parity_buffer, 1, &region)
+		vk.CmdPipelineBarrier(
+			parity_command,
+			{.COLOR_ATTACHMENT_OUTPUT},
+			{.TRANSFER},
+			{},
+			0,
+			nil,
+			0,
+			nil,
+			1,
+			&barrier,
+		)
+		region := vk.BufferImageCopy {
+			imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+			imageExtent = {extent.width, extent.height, 1},
+		}
+		vk.CmdCopyImageToBuffer(
+			parity_command,
+			barrier.image,
+			.TRANSFER_SRC_OPTIMAL,
+			parity_buffer,
+			1,
+			&region,
+		)
 		barrier.srcAccessMask, barrier.dstAccessMask = {.TRANSFER_READ}, {}
 		barrier.oldLayout, barrier.newLayout = .TRANSFER_SRC_OPTIMAL, .PRESENT_SRC_KHR
-		vk.CmdPipelineBarrier(parity_command, {.TRANSFER}, {.BOTTOM_OF_PIPE}, {}, 0, nil, 0, nil, 1, &barrier)
+		vk.CmdPipelineBarrier(
+			parity_command,
+			{.TRANSFER},
+			{.BOTTOM_OF_PIPE},
+			{},
+			0,
+			nil,
+			0,
+			nil,
+			1,
+			&barrier,
+		)
 		assert(vk.EndCommandBuffer(parity_command) == .SUCCESS)
 		commands := [2]vk.CommandBuffer{submits[0].pCommandBuffers[0], parity_command}
 		submit := submits[0]
@@ -242,14 +358,18 @@ when bool(#config(Reify_Integration_Test, false)) {
 		font := integration_font_load(f)
 		integration_present_platform_frames(f, font)
 
-		glfw.IconifyWindow(f.window)
+		when INTEGRATION_VISIBLE_WINDOWS {
+			glfw.IconifyWindow(f.window)
+		}
 		// The callback forces zero pixels even when no window manager is present.
 		f.zero_framebuffer = true
 		integration_present_platform_frames(f, font)
 		assert(f.renderer.framebuffer_size == {})
 		assert(!f.renderer.stopped)
 
-		glfw.RestoreWindow(f.window)
+		when INTEGRATION_VISIBLE_WINDOWS {
+			glfw.RestoreWindow(f.window)
+		}
 		f.zero_framebuffer = false
 		integration_present_platform_frames(f, font)
 		assert(f.renderer.framebuffer_size.x > 0 && f.renderer.framebuffer_size.y > 0)
@@ -335,15 +455,15 @@ when bool(#config(Reify_Integration_Test, false)) {
 			assert(len(r.resources.textures) == initial_textures && !r.stopped)
 		}
 		integration_inject(f, .Font_Upload)
-		handle, ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(handle.idx == -1 && !ok)
+		handle, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(handle.idx == -1 && font_err != nil)
 		assert(len(r.resources.font_faces) == 0)
 		assert(len(r.resources.textures) == initial_textures && !r.stopped)
 
 		integration_inject(f, .None)
 		_, texture_ok := texture_load(r, f.white[:], 1, 1)
-		_, font_ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(texture_ok && font_ok)
+		_, font_err = font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(texture_ok && font_err == nil)
 	}
 
 	@(test)
@@ -396,11 +516,11 @@ when bool(#config(Reify_Integration_Test, false)) {
 		limits := effective_limits(r)
 
 		for len(r.resources.font_faces) < int(limits.fonts) {
-			_, ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-			assert(ok)
+			_, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+			assert(font_err == nil)
 		}
-		font, font_ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(!font_ok && font.idx == -1)
+		font, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(font_err != nil && font.idx == -1)
 		assert(len(r.resources.font_faces) == int(limits.fonts))
 		for len(r.resources.textures) < int(limits.textures) {
 			_, ok := texture_load(r, f.white[:], 1, 1)
@@ -457,8 +577,8 @@ when bool(#config(Reify_Integration_Test, false)) {
 	}
 
 	integration_font_load :: proc(f: ^Integration_Fixture) -> Font_Face_Handle {
-		font, ok := font_load(&f.renderer, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(ok)
+		font, font_err := font_load(&f.renderer, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(font_err == nil)
 		return font
 	}
 
@@ -490,14 +610,14 @@ when bool(#config(Reify_Integration_Test, false)) {
 			handle, ok := texture_load(r, f.white[:], 1, 1)
 			assert(!ok && handle.idx == -1)
 		} else {
-			handle, ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-			assert(!ok && handle.idx == -1)
+			handle, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+			assert(font_err != nil && handle.idx == -1)
 		}
 		assert(r.stopped)
 		assert(len(r.resources.textures) == 1 && len(r.resources.font_faces) == 0)
 		_, texture_ok := texture_load(r, f.white[:], 1, 1)
-		_, font_ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(!texture_ok && !font_ok)
+		_, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(!texture_ok && font_err != nil)
 		start(r, {}, 1)
 		draw_rect(r, {}, 1, 1, {})
 		assert(!present(r))
@@ -518,8 +638,8 @@ when bool(#config(Reify_Integration_Test, false)) {
 		assert(red_ok)
 		green, green_ok := texture_load(r, []Color{{0, 255, 0, 255}}, 1, 1)
 		assert(green_ok)
-		font, font_ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-		assert(font_ok)
+		font, font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+		assert(font_err == nil)
 
 		for _ in 0 ..< 6 {
 			glfw.PollEvents()
@@ -533,15 +653,15 @@ when bool(#config(Reify_Integration_Test, false)) {
 			assert(present(r))
 			// Publication waits for the preceding frame's shared-resource readers.
 			_, texture_ok := texture_load(r, f.white[:], 1, 1)
-			_, next_font_ok := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
-			assert(texture_ok && next_font_ok)
+			_, next_font_err := font_load(r, INTEGRATION_FONT_JSON, INTEGRATION_FONT_IMAGE)
+			assert(texture_ok && next_font_err == nil)
 		}
 	}
 
 	Integration_Fixture :: struct {
 		test:                                 ^testing.T,
 		white:                                [1]Color,
-		renderer:                             Renderer,
+		renderer:                             Test_Renderer,
 		window:                               glfw.WindowHandle,
 		glfw_initialized:                     bool,
 		zero_framebuffer:                     bool,
@@ -607,10 +727,16 @@ when bool(#config(Reify_Integration_Test, false)) {
 			return nil
 		}
 		glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
+		glfw.WindowHint(glfw.VISIBLE, glfw.TRUE if INTEGRATION_VISIBLE_WINDOWS else glfw.FALSE)
 		f.window = glfw.CreateWindow(800, 600, "Reify integration test", nil, nil)
 		if !testing.expect(t, f.window != nil, "Integration test window creation failed") {
 			return nil
 		}
+		testing.expect_value(
+			t,
+			bool(glfw.GetWindowAttrib(f.window, glfw.VISIBLE)),
+			INTEGRATION_VISIBLE_WINDOWS,
+		)
 		glfw.SetWindowUserPointer(f.window, f)
 		glfw.SetWindowSizeCallback(f.window, integration_window_size)
 		return f
@@ -654,33 +780,66 @@ when bool(#config(Reify_Integration_Test, false)) {
 		return ctx
 	}
 
+	@(test)
+	integration_allocated_renderer_lifecycle :: proc(t: ^testing.T) {
+		f := integration_fixture_make(t)
+		if f == nil do return
+		context = integration_fixture_context(f)
+		for _ in 0 ..< 2 {
+			r, ok := renderer_new(integration_renderer_info(f))
+			assert(ok && r != nil)
+			assert(r.backend_type == RENDERER_BACKEND_TYPE)
+			assert(renderer_get_backend(r).init == TEST_RENDERER_BACKEND.init)
+			start(r, {}, 1)
+			draw_rect(r, {}, 10, 10, {255, 255, 255, 255})
+			assert(present(r))
+			renderer_free(r)
+			assert(active_renderer == nil)
+		}
+		r, ok := renderer_new(integration_renderer_info(f))
+		assert(ok)
+		renderer_destroy(r)
+		assert(!r.initialized && !r.loader_owned && active_renderer == nil)
+		err := renderer_init(r, RENDERER_BACKEND_TYPE, integration_renderer_info(f))
+		assert(err.category == .None)
+		renderer_free(r)
+		assert(active_renderer == nil)
+	}
+
 	integration_renderer_init :: proc(f: ^Integration_Fixture) -> bool {
 		context.allocator = mem.tracking_allocator(&f.tracker)
+		err := renderer_init(&f.renderer, RENDERER_BACKEND_TYPE, integration_renderer_info(f))
+		if err.category != .None {
+			f.renderer.last_error = err
+			renderer_log_error(&f.renderer)
+			return false
+		}
+		return true
+	}
+
+	integration_renderer_info :: proc(f: ^Integration_Fixture) -> Renderer_Init_Info {
 		extensions := glfw.GetRequiredInstanceExtensions()
 		assert(len(extensions) > 0)
-		return init(
-			&f.renderer,
-			{
-				platform = {
-					user_data = f,
-					get_framebuffer_size = integration_framebuffer_size,
-					vulkan = {
-						required_instance_extensions = extensions,
-						create_surface = integration_surface_create,
-						destroy_surface = integration_surface_destroy,
-					},
+		return {
+			platform = {
+				user_data = f,
+				get_framebuffer_size = integration_framebuffer_size,
+				vulkan = {
+					required_instance_extensions = extensions,
+					create_surface = integration_surface_create,
+					destroy_surface = integration_surface_destroy,
 				},
-				logical_size = {800, 600},
-				config = {vsync = true},
 			},
-		)
+			logical_size = {800, 600},
+			config = {vsync = true},
+		}
 	}
 
 	integration_renderer_destroy :: proc(f: ^Integration_Fixture) {
 		context.allocator = mem.tracking_allocator(&f.tracker)
 		// Cleanup uses real waits to conclusively retire submitted GPU work.
 		integration_inject(f, .None)
-		destroy(&f.renderer)
+		renderer_destroy(&f.renderer)
 		testing.expect(
 			f.test,
 			!f.renderer.loader_owned,

@@ -20,7 +20,7 @@ FONT_ATLAS_JSON_BYTES :: #load("../assets/fonts/noto-sans-latin-400-normal-msdf.
 FONT_ATLAS_IMG_BYTES :: #load("../assets/fonts/noto-sans-latin-400-normal.png")
 
 scroll_offset: [2]f64
-renderer: re.Renderer = {}
+renderer: ^re.Renderer
 
 main :: proc() {
 	context.logger = log.create_console_logger()
@@ -43,8 +43,8 @@ main :: proc() {
 	glfw.SetWindowSizeCallback(window, window_size)
 	glfw.SetScrollCallback(window, scroll)
 	window_width, window_height := glfw.GetWindowSize(window)
-	ok := re.init(
-		&renderer,
+	ok: bool
+	renderer, ok = re.renderer_new(
 		{
 			platform = glfw_platform(window),
 			logical_size = {int(window_width), int(window_height)},
@@ -52,20 +52,20 @@ main :: proc() {
 		},
 	)
 	if !ok do return
-	defer re.destroy(&renderer)
+	defer re.renderer_free(renderer)
 
 	// ASSET LOADING
 	tree_img := load_tile_img()
 	defer image.destroy(tree_img)
 	tree_pixels := slice.reinterpret([]re.Color, tree_img.pixels.buf[:])
-	tree_tex, tree_ok := re.texture_load(&renderer, tree_pixels, tree_img.width, tree_img.height)
+	tree_tex, tree_ok := re.texture_load(renderer, tree_pixels, tree_img.width, tree_img.height)
 	if !tree_ok do return
 
 	tilemap_img := load_tilemap()
 	defer image.destroy(tilemap_img)
 	tilemap_pixels := slice.reinterpret([]re.Color, tilemap_img.pixels.buf[:])
 	tilemap_tex, tilemap_ok := re.texture_load(
-		&renderer,
+		renderer,
 		tilemap_pixels,
 		tilemap_img.width,
 		tilemap_img.height,
@@ -78,8 +78,8 @@ main :: proc() {
 		h = f32(16) / f32(tilemap_img.height),
 	}
 
-	font, font_ok := re.font_load(&renderer, FONT_ATLAS_JSON_BYTES, FONT_ATLAS_IMG_BYTES)
-	if !font_ok do return
+	font, font_err := re.font_load(renderer, FONT_ATLAS_JSON_BYTES, FONT_ATLAS_IMG_BYTES)
+	if font_err != nil do return
 
 	// MAIN LOOP
 	cam_pos := [2]f32{100, 100}
@@ -95,14 +95,14 @@ main :: proc() {
 		window_width, window_height = glfw.GetWindowSize(window)
 
 		// Draw!
-		re.start(&renderer, cam_pos, cam_zoom)
+		re.start(renderer, cam_pos, cam_zoom)
 
 		// batch 1 - draw shapes in the world, affected by camera (default projection)
-		re.draw_image(&renderer, tree_tex, {0, 0})
+		re.draw_image(renderer, tree_tex, {0, 0})
 		pulse := f32(math.sin(glfw.GetTime() * 2.0) + 1.0) * 0.5
 		// little fake glow effect
 		re.draw_image(
-			&renderer,
+			renderer,
 			tree_tex,
 			{0, -2},
 			scale = {1 + pulse * 0.25, 1 + pulse * 0.25},
@@ -110,39 +110,39 @@ main :: proc() {
 			rgb_tint = {100, 200, 255},
 			is_additive = true,
 		)
-		re.draw_rect(&renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
-		re.draw_triangle(&renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
-		re.draw_line(&renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
-		re.draw_circle(&renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
-		re.draw_image(&renderer, tilemap_tex, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
+		re.draw_rect(renderer, {-50, -50}, 50, 50, re.Color{255, 0, 0, 255})
+		re.draw_triangle(renderer, {40, -40}, {70, -40}, {55, -60}, re.Color{255, 0, 255, 255})
+		re.draw_line(renderer, {-30, 30}, {-70, 60}, 3, re.Color{200, 64, 0, 255})
+		re.draw_circle(renderer, {50, 50}, 50, re.Color{0, 255, 0, 128})
+		re.draw_image(renderer, tilemap_tex, {-50, 0}, uv_rect = mushroom_uv_rect) // example using tilemap and sub uv rect
 
 		// batch 2 - draw on the screen, not the world!
-		re.begin_screen_mode(&renderer)
+		re.begin_screen_mode(renderer)
 		re.draw_circle(
-			&renderer,
+			renderer,
 			{f32(window_width) / 2, f32(window_height) / 2},
 			100,
 			re.Color{0, 0, 0, 255},
 		)
 		p0 := [2]f32{f32(window_width) / 2 - 300, f32(window_height) / 2 + 200}
 		re.draw_text(
-			&renderer,
+			renderer,
 			font,
 			"gbc DEi	1`2~3	!-@=#\nabcdefghijklmnopqrstuvwxyz",
 			p0,
 			42,
 			color = {255, 255, 255, 255},
 		)
-		re.end_screen_mode(&renderer)
+		re.end_screen_mode(renderer)
 
-		if !re.present(&renderer) do return
+		if !re.present(renderer) do return
 		free_all(context.temp_allocator)
 	}
 }
 
 window_size :: proc "c" (window: glfw.WindowHandle, width, height: c.int) {
 	context = runtime.default_context()
-	re.window_resize(&renderer, width, height)
+	if renderer != nil do re.window_resize(renderer, width, height)
 }
 
 scroll :: proc "c" (window: glfw.WindowHandle, x_offset, y_offset: f64) {

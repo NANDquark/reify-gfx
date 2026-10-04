@@ -125,11 +125,11 @@ retain the previous known-working setting until the next successful startup.
 
 ## Runtime dispatch and backend state
 
-Replace `when RENDERER_BACKEND == ...` dispatch in `reify.odin` with an explicit
-runtime switch on a Reify-owned backend enum. Use a tagged backend-state union or
-equivalent owned state reference, so only the selected backend's state is active.
-For two backends, direct dispatch is easier to audit than a large dynamic
-plugin interface. Measure overhead before considering a procedure table.
+Replace build-time concrete `Renderer` and `Renderer_Interface` selection with
+runtime selection on a Reify-owned backend enum. Keep the selected procedure
+table paired with its concrete backend storage, using a tagged backend-state
+union or equivalent owned state reference so only the selected state is active.
+The existing tables contain renderer operations, not a dynamic plugin interface.
 
 Move shared public types out of backend-specific files. Dispatch every operation,
 including initialization/destruction, resource loading, metrics, camera/screen

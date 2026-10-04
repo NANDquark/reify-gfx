@@ -48,14 +48,21 @@ Reify defaults to Vulkan 1.3. Select the owned Vulkan 1.1 compatibility backend
 at build time with `odin run demo -out:/tmp/opencode/reify11-demo
 -define:Renderer_Backend=vulkan11`. Explicit selection does not fall back.
 Runtime Auto/selection is not implemented yet. See the [GLFW demo](demo/demo.odin) or
-[SDL example](examples/sdl_vulkan/main.odin) for `init(renderer, info)` setup.
+[SDL example](examples/sdl_vulkan/main.odin) for `renderer_new(info)` setup.
+`renderer_new(info, allocator)` allocates and initializes the compile-time-selected
+concrete backend, returning `(^Renderer, bool)`. Failure returns `nil, false` after
+cleanup. Plain `Renderer` values are not sufficient backend storage. Pair a
+successful allocation with `renderer_free(renderer)`, which releases GPU resources
+and storage; do not use `free` on the base pointer. The storage allocator must
+remain valid until `renderer_free` returns. `info.resources_allocator` independently selects
+the allocator for backend resources.
 The host window must outlive the renderer. Platform callbacks are defined in
 [reify_platform.odin](reify_platform.odin).
 
-Query the window provider's Vulkan instance extensions before `init` and handle
+Query the window provider's Vulkan instance extensions before `renderer_new` and handle
 provider errors in the host. Supply the borrowed `[]cstring` in
 `platform.vulkan.required_instance_extensions`; names must remain valid until
-`init` returns and are not retained. Reify combines, deduplicates, and validates
+`renderer_new` returns and are not retained. Reify combines, deduplicates, and validates
 them. The host owns callback state and the window; Reify destroys a successfully
 created surface through the adapter before destroying its instance.
 
@@ -79,18 +86,18 @@ fonts also consume a texture slot. Texture input must contain exactly
 allocator block bytes, and optional advisory budget/headroom telemetry. Heap size
 is not free memory, and a budget is not an allocation guarantee.
 
-`init` and `present` return `bool`; `texture_load` and `font_load` return
+`renderer_new` returns `(renderer, bool)`; `present` returns `bool`; `texture_load` and `font_load` return
 `(handle, bool)`. `true` means success. Failures log detailed diagnostics through
 Odin's `context.logger`; configure a logger to receive them. Resource loading
 never publishes failed handles (the returned index is -1).
 Invalid drawing handles or instance-capacity overflow reject the frame through
 `present`; a new `start` resets that frame's validity. Driver/presentation failures stop
 submission rather than reusing a failed fence or acquired-image semaphore; destroy
-the renderer before explicitly initializing again. Device-loss recovery is not
+the renderer and create a new one. Device-loss recovery is not
 automatic. Shared descriptor/font updates wait for GPU readers and may stall.
 The Vulkan backend stops GPU use immediately when a resource operation detects
 device loss; subsequent resource operations and `present` return `false`.
-`destroy` stops the renderer, waits until the GPU is idle, and releases all
+`renderer_free` stops the renderer, waits until the GPU is idle, and releases all
 resources; it returns nothing. An idle-wait failure other than device loss is
 fatal, since GPU completion cannot be established. Call it once when finished
 and keep the host window/callback state alive until it returns.
@@ -171,13 +178,19 @@ increase draw calls and CPU batching/recording work; atlas-friendly scenes merge
 ## Tests
 
 Run package tests with `odin test . -out:/tmp/opencode/reify-tests`.
-The opt-in integration suite creates GLFW windows and requires a display and a
+The opt-in integration suite creates hidden GLFW windows and requires a display and a
 compatible Vulkan device:
 
 ```sh
 odin test . -out:/tmp/opencode/reify-integration-tests \
   -define:Reify_Integration_Test=true -define:Reify_Enable_Validation=true
 ```
+
+Windows remain hidden by default. Add `-define:Reify_Integration_Visible_Windows=true`
+to show them for debugging and exercise native minimize/restore calls. Hidden mode
+tests the same zero-framebuffer transitions through its platform callback without
+asking the window manager to minimize or restore windows. This is not a headless
+mode: a working display server is still required.
 
 Integration scenarios use fresh window/renderer fixtures and serialize Vulkan
 dispatch interception with the package's dispatch-mutating unit tests. They cover
